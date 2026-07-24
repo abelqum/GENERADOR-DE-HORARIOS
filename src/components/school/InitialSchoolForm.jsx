@@ -2,7 +2,7 @@
 
 import { useActionState } from "react";
 import { Building2 } from "lucide-react";
-import { createSchoolAction } from "@/app/(dashboard)/configuracion/inicial/actions";
+import { createSchoolAction } from "@/app/configuracion/inicial/actions";
 
 const initialState = {
   success: false,

@@ -3,7 +3,6 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
-import { getCurrentSchool } from "@/lib/school/getCurrentSchool";
 import { createClient } from "@/lib/supabase/server";
 
 function getValue(formData, field) {
@@ -23,13 +22,9 @@ function validateSchoolName(name) {
 
 export async function createSchoolAction(_previousState, formData) {
   const name = getValue(formData, "name");
-
   const code = getValue(formData, "code");
-
   const email = getValue(formData, "email");
-
   const phone = getValue(formData, "phone");
-
   const address = getValue(formData, "address");
 
   const validationError = validateSchoolName(name);
@@ -59,7 +54,7 @@ export async function createSchoolAction(_previousState, formData) {
     .maybeSingle();
 
   if (membershipError) {
-    console.error("Error verificando escuela:", membershipError);
+    console.error("Error verificando la escuela del usuario:", membershipError);
 
     return {
       success: false,
@@ -71,20 +66,25 @@ export async function createSchoolAction(_previousState, formData) {
     redirect("/");
   }
 
-  const { error: insertError } = await supabase.from("schools").insert({
-    owner_user_id: user.id,
-    name,
-    code: code || null,
-    email: email || null,
-    phone: phone || null,
-    address: address || null,
-    timezone: "America/Mexico_City",
-  });
+  const { data: school, error: schoolError } = await supabase
+    .from("schools")
+    .insert({
+      owner_user_id: user.id,
+      name,
+      code: code || null,
+      email: email || null,
+      phone: phone || null,
+      address: address || null,
+      timezone: "America/Mexico_City",
+      active: true,
+    })
+    .select("id")
+    .single();
 
-  if (insertError) {
-    console.error("Error creando escuela:", insertError);
+  if (schoolError || !school) {
+    console.error("Error creando escuela:", schoolError);
 
-    if (insertError.code === "23505") {
+    if (schoolError?.code === "23505") {
       return {
         success: false,
         message: "Ya existe una escuela con ese código.",
@@ -97,65 +97,35 @@ export async function createSchoolAction(_previousState, formData) {
     };
   }
 
-  revalidatePath("/", "layout");
+  /*
+   * Se crea explícitamente la relación del usuario con la escuela.
+   * No dependemos de que exista un trigger en Supabase.
+   */
+  const { error: membershipInsertError } = await supabase
+    .from("school_members")
+    .insert({
+      school_id: school.id,
+      user_id: user.id,
+      role: "admin",
+    });
 
-  redirect("/");
-}
+  if (membershipInsertError) {
+    console.error("Error creando membresía de escuela:", membershipInsertError);
 
-export async function updateSchoolAction(formData) {
-  const name = getValue(formData, "name");
-
-  const code = getValue(formData, "code");
-
-  const email = getValue(formData, "email");
-
-  const phone = getValue(formData, "phone");
-
-  const address = getValue(formData, "address");
-
-  const validationError = validateSchoolName(name);
-
-  if (validationError) {
-    return validationError;
-  }
-
-  const { school } = await getCurrentSchool();
-
-  const supabase = await createClient();
-
-  const { error } = await supabase
-    .from("schools")
-    .update({
-      name,
-      code: code || null,
-      email: email || null,
-      phone: phone || null,
-      address: address || null,
-    })
-    .eq("id", school.id);
-
-  if (error) {
-    console.error("Error actualizando escuela:", error);
-
-    if (error.code === "23505") {
-      return {
-        success: false,
-        message: "Ya existe otra escuela con ese código.",
-      };
-    }
+    /*
+     * Intentamos eliminar la escuela incompleta para no dejar
+     * información huérfana.
+     */
+    await supabase.from("schools").delete().eq("id", school.id);
 
     return {
       success: false,
-      message: "No fue posible actualizar la escuela.",
+      message:
+        "La escuela fue creada, pero no fue posible asociarla con tu cuenta.",
     };
   }
 
-  revalidatePath("/configuracion");
-
   revalidatePath("/", "layout");
 
-  return {
-    success: true,
-    message: "Información de la escuela actualizada correctamente.",
-  };
+  redirect("/");
 }
