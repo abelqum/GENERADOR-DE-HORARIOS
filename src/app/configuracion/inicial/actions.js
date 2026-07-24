@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { getCurrentSchool } from "@/lib/school/getCurrentSchool";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
 function getValue(formData, field) {
@@ -28,15 +29,51 @@ function validateSchoolData({ name, email }) {
   return null;
 }
 
+function getDatabaseErrorMessage(error, fallbackMessage) {
+  if (!error) {
+    return fallbackMessage;
+  }
+
+  if (error.code === "23505") {
+    return "Ya existe un registro con esos datos.";
+  }
+
+  if (
+    error.code === "42501" ||
+    error.message?.toLowerCase().includes("row-level security")
+  ) {
+    return (
+      "Supabase rechazó la operación por permisos. " +
+      "Revisa la clave secreta configurada en el servidor."
+    );
+  }
+
+  if (error.code === "42703") {
+    return (
+      "La estructura de la tabla no coincide con el código: " + error.message
+    );
+  }
+
+  if (error.code === "23502") {
+    return "Falta un dato obligatorio en la base de datos: " + error.message;
+  }
+
+  return `${fallbackMessage} Detalle: ${error.message}`;
+}
+
 function revalidateSchoolPages() {
   revalidatePath("/");
   revalidatePath("/configuracion");
+  revalidatePath("/configuracion/inicial");
   revalidatePath("/", "layout");
 }
 
 /**
- * Crea la escuela inicial y la relaciona
- * con el usuario autenticado.
+ * Registra la escuela inicial.
+ *
+ * El usuario se obtiene con el cliente SSR normal.
+ * Las inserciones se realizan con el cliente administrativo
+ * para evitar que RLS bloquee la configuración inicial.
  */
 export async function createSchoolAction(_previousState, formData) {
   const name = getValue(formData, "name");
@@ -58,32 +95,60 @@ export async function createSchoolAction(_previousState, formData) {
     return validationError;
   }
 
-  const supabase = await createClient();
+  /*
+   * Primero verificamos la sesión utilizando
+   * las cookies del usuario.
+   */
+  const userClient = await createClient();
 
   const {
     data: { user },
     error: userError,
-  } = await supabase.auth.getUser();
+  } = await userClient.auth.getUser();
 
   if (userError || !user) {
+    console.error("Error obteniendo usuario:", userError);
+
     return {
       success: false,
       message: "Tu sesión no es válida. Inicia sesión nuevamente.",
     };
   }
 
-  const { data: existingMembership, error: membershipError } = await supabase
-    .from("school_members")
-    .select("school_id")
-    .eq("user_id", user.id)
-    .maybeSingle();
+  let adminClient;
 
-  if (membershipError) {
-    console.error("Error verificando la escuela del usuario:", membershipError);
+  try {
+    adminClient = createAdminClient();
+  } catch (error) {
+    console.error("Error creando cliente administrativo:", error);
 
     return {
       success: false,
-      message: "No fue posible verificar la configuración actual.",
+      message:
+        "No está configurada correctamente la clave secreta de Supabase.",
+    };
+  }
+
+  /*
+   * La consulta administrativa evita que una política
+   * RLS oculte una membresía existente.
+   */
+  const { data: existingMembership, error: membershipLookupError } =
+    await adminClient
+      .from("school_members")
+      .select("school_id")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+  if (membershipLookupError) {
+    console.error("Error verificando membresía:", membershipLookupError);
+
+    return {
+      success: false,
+      message: getDatabaseErrorMessage(
+        membershipLookupError,
+        "No fue posible verificar la configuración actual.",
+      ),
     };
   }
 
@@ -91,7 +156,7 @@ export async function createSchoolAction(_previousState, formData) {
     redirect("/");
   }
 
-  const { data: school, error: schoolError } = await supabase
+  const { data: school, error: schoolError } = await adminClient
     .from("schools")
     .insert({
       owner_user_id: user.id,
@@ -112,39 +177,75 @@ export async function createSchoolAction(_previousState, formData) {
     if (schoolError?.code === "23505") {
       return {
         success: false,
-        message: "Ya existe una escuela con ese código.",
+        message: "Ya existe una escuela con esa clave o código.",
       };
     }
 
     return {
       success: false,
-      message: "No fue posible registrar la escuela.",
+      message: getDatabaseErrorMessage(
+        schoolError,
+        "No fue posible registrar la escuela.",
+      ),
     };
   }
 
-  const { error: membershipInsertError } = await supabase
+  /*
+   * Algunos proyectos tienen un trigger que crea automáticamente
+   * school_members. Comprobamos antes de insertar para evitar
+   * duplicados.
+   */
+  const {
+    data: membershipCreatedByTrigger,
+    error: membershipAfterSchoolError,
+  } = await adminClient
     .from("school_members")
-    .insert({
-      school_id: school.id,
-      user_id: user.id,
-      role: "admin",
-    });
+    .select("school_id")
+    .eq("user_id", user.id)
+    .maybeSingle();
 
-  if (membershipInsertError) {
-    console.error("Error creando membresía de escuela:", membershipInsertError);
+  if (membershipAfterSchoolError) {
+    console.error(
+      "Error comprobando membresía después de crear la escuela:",
+      membershipAfterSchoolError,
+    );
 
-    /*
-     * Limpieza compensatoria:
-     * elimina la escuela si no fue posible
-     * asociarla al usuario.
-     */
-    await supabase.from("schools").delete().eq("id", school.id);
+    await adminClient.from("schools").delete().eq("id", school.id);
 
     return {
       success: false,
-      message:
-        "La escuela fue creada, pero no fue posible asociarla con tu cuenta.",
+      message: getDatabaseErrorMessage(
+        membershipAfterSchoolError,
+        "La escuela fue creada, pero no fue posible comprobar la membresía.",
+      ),
     };
+  }
+
+  if (!membershipCreatedByTrigger) {
+    const { error: membershipInsertError } = await adminClient
+      .from("school_members")
+      .insert({
+        school_id: school.id,
+        user_id: user.id,
+        role: "admin",
+      });
+
+    if (membershipInsertError) {
+      console.error("Error creando membresía:", membershipInsertError);
+
+      /*
+       * Evita dejar una escuela sin usuario asociado.
+       */
+      await adminClient.from("schools").delete().eq("id", school.id);
+
+      return {
+        success: false,
+        message: getDatabaseErrorMessage(
+          membershipInsertError,
+          "La escuela fue creada, pero no fue posible asociarla con tu cuenta.",
+        ),
+      };
+    }
   }
 
   revalidateSchoolPages();
@@ -153,8 +254,7 @@ export async function createSchoolAction(_previousState, formData) {
 }
 
 /**
- * Actualiza la información de la escuela
- * asociada con el usuario autenticado.
+ * Edita los datos de la escuela existente.
  */
 export async function updateSchoolAction(formData) {
   const name = getValue(formData, "name");
@@ -176,17 +276,23 @@ export async function updateSchoolAction(formData) {
     return validationError;
   }
 
-  /*
-   * getCurrentSchool verifica:
-   * - sesión válida
-   * - membresía existente
-   * - escuela asociada
-   */
   const { school } = await getCurrentSchool();
 
-  const supabase = await createClient();
+  let adminClient;
 
-  const { data: updatedSchool, error } = await supabase
+  try {
+    adminClient = createAdminClient();
+  } catch (error) {
+    console.error("Error creando cliente administrativo:", error);
+
+    return {
+      success: false,
+      message:
+        "No está configurada correctamente la clave secreta de Supabase.",
+    };
+  }
+
+  const { data: updatedSchool, error } = await adminClient
     .from("schools")
     .update({
       name,
@@ -205,21 +311,23 @@ export async function updateSchoolAction(formData) {
     if (error.code === "23505") {
       return {
         success: false,
-        message: "Ya existe otra escuela con ese código.",
+        message: "Ya existe otra escuela con esa clave o código.",
       };
     }
 
     return {
       success: false,
-      message: "No fue posible actualizar la escuela.",
+      message: getDatabaseErrorMessage(
+        error,
+        "No fue posible actualizar la escuela.",
+      ),
     };
   }
 
   if (!updatedSchool) {
     return {
       success: false,
-      message:
-        "La escuela no pudo actualizarse. Revisa los permisos de Supabase.",
+      message: "La escuela no fue encontrada o no pudo actualizarse.",
     };
   }
 
