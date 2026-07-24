@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import Swal from "sweetalert2";
 
-import { updateSchoolAction } from "@/app/(dashboard)/configuracion/inicial/actions";
+import { updateSchoolAction } from "@/app/configuracion/inicial/actions";
 
 function escapeHtml(value) {
   return String(value ?? "")
