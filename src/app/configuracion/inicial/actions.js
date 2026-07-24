@@ -3,13 +3,14 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
+import { getCurrentSchool } from "@/lib/school/getCurrentSchool";
 import { createClient } from "@/lib/supabase/server";
 
 function getValue(formData, field) {
   return String(formData.get(field) ?? "").trim();
 }
 
-function validateSchoolName(name) {
+function validateSchoolData({ name, email }) {
   if (name.length < 3) {
     return {
       success: false,
@@ -17,17 +18,41 @@ function validateSchoolName(name) {
     };
   }
 
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return {
+      success: false,
+      message: "El correo institucional no tiene un formato válido.",
+    };
+  }
+
   return null;
 }
 
+function revalidateSchoolPages() {
+  revalidatePath("/");
+  revalidatePath("/configuracion");
+  revalidatePath("/", "layout");
+}
+
+/**
+ * Crea la escuela inicial y la relaciona
+ * con el usuario autenticado.
+ */
 export async function createSchoolAction(_previousState, formData) {
   const name = getValue(formData, "name");
+
   const code = getValue(formData, "code");
+
   const email = getValue(formData, "email");
+
   const phone = getValue(formData, "phone");
+
   const address = getValue(formData, "address");
 
-  const validationError = validateSchoolName(name);
+  const validationError = validateSchoolData({
+    name,
+    email,
+  });
 
   if (validationError) {
     return validationError;
@@ -97,10 +122,6 @@ export async function createSchoolAction(_previousState, formData) {
     };
   }
 
-  /*
-   * Se crea explícitamente la relación del usuario con la escuela.
-   * No dependemos de que exista un trigger en Supabase.
-   */
   const { error: membershipInsertError } = await supabase
     .from("school_members")
     .insert({
@@ -113,8 +134,9 @@ export async function createSchoolAction(_previousState, formData) {
     console.error("Error creando membresía de escuela:", membershipInsertError);
 
     /*
-     * Intentamos eliminar la escuela incompleta para no dejar
-     * información huérfana.
+     * Limpieza compensatoria:
+     * elimina la escuela si no fue posible
+     * asociarla al usuario.
      */
     await supabase.from("schools").delete().eq("id", school.id);
 
@@ -125,7 +147,86 @@ export async function createSchoolAction(_previousState, formData) {
     };
   }
 
-  revalidatePath("/", "layout");
+  revalidateSchoolPages();
 
   redirect("/");
+}
+
+/**
+ * Actualiza la información de la escuela
+ * asociada con el usuario autenticado.
+ */
+export async function updateSchoolAction(formData) {
+  const name = getValue(formData, "name");
+
+  const code = getValue(formData, "code");
+
+  const email = getValue(formData, "email");
+
+  const phone = getValue(formData, "phone");
+
+  const address = getValue(formData, "address");
+
+  const validationError = validateSchoolData({
+    name,
+    email,
+  });
+
+  if (validationError) {
+    return validationError;
+  }
+
+  /*
+   * getCurrentSchool verifica:
+   * - sesión válida
+   * - membresía existente
+   * - escuela asociada
+   */
+  const { school } = await getCurrentSchool();
+
+  const supabase = await createClient();
+
+  const { data: updatedSchool, error } = await supabase
+    .from("schools")
+    .update({
+      name,
+      code: code || null,
+      email: email || null,
+      phone: phone || null,
+      address: address || null,
+    })
+    .eq("id", school.id)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    console.error("Error actualizando escuela:", error);
+
+    if (error.code === "23505") {
+      return {
+        success: false,
+        message: "Ya existe otra escuela con ese código.",
+      };
+    }
+
+    return {
+      success: false,
+      message: "No fue posible actualizar la escuela.",
+    };
+  }
+
+  if (!updatedSchool) {
+    return {
+      success: false,
+      message:
+        "La escuela no pudo actualizarse. Revisa los permisos de Supabase.",
+    };
+  }
+
+  revalidateSchoolPages();
+
+  return {
+    success: true,
+    message: "Información de la escuela actualizada correctamente.",
+  };
 }
