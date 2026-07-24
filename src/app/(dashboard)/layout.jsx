@@ -1,5 +1,4 @@
-import Header from "@/components/layout/Header";
-import Sidebar from "@/components/layout/Sidebar";
+import DashboardShell from "@/components/layout/DashboardShell";
 import { getCurrentSchool } from "@/lib/school/getCurrentSchool";
 
 export const dynamic = "force-dynamic";
@@ -7,20 +6,16 @@ export const dynamic = "force-dynamic";
 export default async function DashboardLayout({ children }) {
   const { user, school } = await getCurrentSchool();
 
+  const userName =
+    user?.user_metadata?.full_name ||
+    user?.email?.split("@")[0] ||
+    "Administrador";
+
+  const userEmail = user?.email || "";
+
   return (
-    <div className="min-h-screen bg-slate-100 lg:flex">
-      <Sidebar />
-
-      <div className="min-w-0 flex-1">
-        <Header
-          user={user}
-          school={school}
-        />
-
-        <main className="p-4 sm:p-6 lg:p-8">
-          {children}
-        </main>
-      </div>
-    </div>
+    <DashboardShell userName={userName} userEmail={userEmail} school={school}>
+      {children}
+    </DashboardShell>
   );
 }
