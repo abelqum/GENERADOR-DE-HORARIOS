@@ -11,18 +11,10 @@ function removeSeconds(time) {
 }
 
 function getTeacherName(teacher) {
-  return [
-    teacher.first_name,
-    teacher.last_name,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  return [teacher.first_name, teacher.last_name].filter(Boolean).join(" ");
 }
 
-function logSupabaseError(
-  title,
-  error,
-) {
+function logSupabaseError(title, error) {
   if (!error) {
     return;
   }
@@ -35,31 +27,27 @@ function logSupabaseError(
   });
 }
 
-export async function buildSchedulePayload({
-  sourceVersionId = null,
-} = {}) {
-  const { school } =
-    await getCurrentSchool();
+export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
+  const { school } = await getCurrentSchool();
 
-  const supabase =
-    await createClient();
+  const supabase = await createClient();
 
   /*
    * El ciclo activo debe consultarse antes de utilizarlo
    * para validar una versión base.
    */
-  const {
-    data: activeAcademicPeriod,
-    error: academicPeriodError,
-  } = await supabase
-    .from("academic_periods")
-    .select(`
+  const { data: activeAcademicPeriod, error: academicPeriodError } =
+    await supabase
+      .from("academic_periods")
+      .select(
+        `
       id,
       name
-    `)
-    .eq("school_id", school.id)
-    .eq("active", true)
-    .maybeSingle();
+    `,
+      )
+      .eq("school_id", school.id)
+      .eq("active", true)
+      .maybeSingle();
 
   if (academicPeriodError) {
     logSupabaseError(
@@ -67,15 +55,11 @@ export async function buildSchedulePayload({
       academicPeriodError,
     );
 
-    throw new Error(
-      "No fue posible consultar el ciclo escolar activo.",
-    );
+    throw new Error("No fue posible consultar el ciclo escolar activo.");
   }
 
   if (!activeAcademicPeriod) {
-    throw new Error(
-      "No existe un ciclo escolar activo.",
-    );
+    throw new Error("No existe un ciclo escolar activo.");
   }
 
   let lockedEntries = [];
@@ -86,33 +70,24 @@ export async function buildSchedulePayload({
    * obligatorias para el solver.
    */
   if (sourceVersionId) {
-    const {
-      data: sourceVersion,
-      error: sourceVersionError,
-    } = await supabase
+    const { data: sourceVersion, error: sourceVersionError } = await supabase
       .from("schedule_versions")
-      .select(`
+      .select(
+        `
         id,
         academic_period_id,
         status
-      `)
+      `,
+      )
       .eq("id", sourceVersionId)
       .eq("school_id", school.id)
-      .eq(
-        "academic_period_id",
-        activeAcademicPeriod.id,
-      )
+      .eq("academic_period_id", activeAcademicPeriod.id)
       .maybeSingle();
 
     if (sourceVersionError) {
-      logSupabaseError(
-        "Error obteniendo versión base:",
-        sourceVersionError,
-      );
+      logSupabaseError("Error obteniendo versión base:", sourceVersionError);
 
-      throw new Error(
-        "No fue posible consultar la versión base.",
-      );
+      throw new Error("No fue posible consultar la versión base.");
     }
 
     if (!sourceVersion) {
@@ -121,32 +96,26 @@ export async function buildSchedulePayload({
       );
     }
 
-    if (
-      sourceVersion.status !==
-      "draft"
-    ) {
+    if (sourceVersion.status !== "draft") {
       throw new Error(
         "Solamente se puede reoptimizar una versión en borrador.",
       );
     }
 
-    const {
-      data: lockedEntriesData,
-      error: lockedEntriesError,
-    } = await supabase
-      .from("schedule_entries")
-      .select(`
+    const { data: lockedEntriesData, error: lockedEntriesError } =
+      await supabase
+        .from("schedule_entries")
+        .select(
+          `
         teaching_assignment_id,
         occurrence_number,
         day_of_week,
         shift_period_id
-      `)
-      .eq("school_id", school.id)
-      .eq(
-        "schedule_version_id",
-        sourceVersion.id,
-      )
-      .eq("locked", true);
+      `,
+        )
+        .eq("school_id", school.id)
+        .eq("schedule_version_id", sourceVersion.id)
+        .eq("locked", true);
 
     if (lockedEntriesError) {
       logSupabaseError(
@@ -154,53 +123,31 @@ export async function buildSchedulePayload({
         lockedEntriesError,
       );
 
-      throw new Error(
-        "No fue posible consultar las clases bloqueadas.",
-      );
+      throw new Error("No fue posible consultar las clases bloqueadas.");
     }
 
-    lockedEntries = (
-      lockedEntriesData ?? []
-    ).map((entry) => ({
-      assignment_id:
-        entry.teaching_assignment_id,
+    lockedEntries = (lockedEntriesData ?? []).map((entry) => ({
+      assignment_id: entry.teaching_assignment_id,
 
-      occurrence_number:
-        entry.occurrence_number,
+      occurrence_number: entry.occurrence_number,
 
-      day_of_week:
-        entry.day_of_week,
+      day_of_week: entry.day_of_week,
 
-      shift_period_id:
-        entry.shift_period_id,
+      shift_period_id: entry.shift_period_id,
     }));
   }
 
   const [
-    {
-      data: shiftPeriods,
-      error: shiftPeriodsError,
-    },
-    {
-      data: groups,
-      error: groupsError,
-    },
-    {
-      data: teachers,
-      error: teachersError,
-    },
-    {
-      data: assignments,
-      error: assignmentsError,
-    },
-    {
-      data: availability,
-      error: availabilityError,
-    },
+    { data: shiftPeriods, error: shiftPeriodsError },
+    { data: groups, error: groupsError },
+    { data: teachers, error: teachersError },
+    { data: assignments, error: assignmentsError },
+    { data: availability, error: availabilityError },
   ] = await Promise.all([
     supabase
       .from("shift_periods")
-      .select(`
+      .select(
+        `
         id,
         shift_id,
         period_number,
@@ -209,7 +156,8 @@ export async function buildSchedulePayload({
         end_time,
         period_type,
         active
-      `)
+      `,
+      )
       .eq("school_id", school.id)
       .eq("active", true)
       .order("period_number", {
@@ -218,37 +166,39 @@ export async function buildSchedulePayload({
 
     supabase
       .from("groups")
-      .select(`
+      .select(
+        `
         id,
         name,
         grade_level_id,
         shift_id,
         academic_period_id,
         active
-      `)
-      .eq("school_id", school.id)
-      .eq(
-        "academic_period_id",
-        activeAcademicPeriod.id,
+      `,
       )
+      .eq("school_id", school.id)
+      .eq("academic_period_id", activeAcademicPeriod.id)
       .eq("active", true),
 
     supabase
       .from("teachers")
-      .select(`
+      .select(
+        `
         id,
         first_name,
         last_name,
         max_weekly_periods,
         max_daily_periods,
         active
-      `)
+      `,
+      )
       .eq("school_id", school.id)
       .eq("active", true),
 
     supabase
       .from("teaching_assignments")
-      .select(`
+      .select(
+        `
         id,
         group_id,
         subject_id,
@@ -258,27 +208,24 @@ export async function buildSchedulePayload({
         min_days_per_week,
         allow_consecutive_periods,
         preferred_block_size
-      `)
+      `,
+      )
       .eq("school_id", school.id)
-      .eq(
-        "academic_period_id",
-        activeAcademicPeriod.id,
-      ),
+      .eq("academic_period_id", activeAcademicPeriod.id),
 
     supabase
       .from("teacher_availability")
-      .select(`
+      .select(
+        `
         teacher_id,
         day_of_week,
         shift_period_id,
         availability_type,
         weight
-      `)
+      `,
+      )
       .eq("school_id", school.id)
-      .eq(
-        "academic_period_id",
-        activeAcademicPeriod.id,
-      ),
+      .eq("academic_period_id", activeAcademicPeriod.id),
   ]);
 
   const queryErrors = [
@@ -305,101 +252,60 @@ export async function buildSchedulePayload({
     );
   }
 
-  if (
-    !(shiftPeriods ?? []).length
-  ) {
-    throw new Error(
-      "No existen horas escolares activas.",
-    );
+  if (!(shiftPeriods ?? []).length) {
+    throw new Error("No existen horas escolares activas.");
   }
 
   if (!(groups ?? []).length) {
-    throw new Error(
-      "No existen grupos activos para el ciclo actual.",
-    );
+    throw new Error("No existen grupos activos para el ciclo actual.");
   }
 
-  if (
-    !(teachers ?? []).length
-  ) {
-    throw new Error(
-      "No existen profesores activos.",
-    );
+  if (!(teachers ?? []).length) {
+    throw new Error("No existen profesores activos.");
   }
 
-  if (
-    !(assignments ?? []).length
-  ) {
-    throw new Error(
-      "No existen asignaciones docentes.",
-    );
+  if (!(assignments ?? []).length) {
+    throw new Error("No existen asignaciones docentes.");
   }
 
-  const activeGroupIds =
-    new Set(
-      (groups ?? []).map(
-        (group) => group.id,
-      ),
-    );
+  const activeGroupIds = new Set((groups ?? []).map((group) => group.id));
 
-  const activeTeacherIds =
-    new Set(
-      (teachers ?? []).map(
-        (teacher) => teacher.id,
-      ),
-    );
+  const activeTeacherIds = new Set(
+    (teachers ?? []).map((teacher) => teacher.id),
+  );
 
   /*
    * Evitamos mandar al solver asignaciones que
    * pertenecen a grupos o profesores inactivos.
    */
-  const usableAssignments = (
-    assignments ?? []
-  ).filter(
+  const usableAssignments = (assignments ?? []).filter(
     (assignment) =>
-      activeGroupIds.has(
-        assignment.group_id,
-      ) &&
-      activeTeacherIds.has(
-        assignment.teacher_id,
-      ),
+      activeGroupIds.has(assignment.group_id) &&
+      activeTeacherIds.has(assignment.teacher_id),
   );
 
-  if (
-    !usableAssignments.length
-  ) {
+  if (!usableAssignments.length) {
     throw new Error(
       "Las asignaciones existentes no pertenecen a grupos y profesores activos.",
     );
   }
 
-  const assignmentIds =
-    new Set(
-      usableAssignments.map(
-        (assignment) =>
-          assignment.id,
-      ),
-    );
+  const assignmentIds = new Set(
+    usableAssignments.map((assignment) => assignment.id),
+  );
 
   /*
    * Una clase bloqueada debe continuar vinculada
    * con una asignación que todavía exista.
    */
-  const invalidLockedEntry =
-    lockedEntries.find(
-      (entry) =>
-        !entry.assignment_id ||
-        !assignmentIds.has(
-          entry.assignment_id,
-        ) ||
-        !Number.isInteger(
-          entry.occurrence_number,
-        ) ||
-        !Number.isInteger(
-          entry.day_of_week,
-        ) ||
-        !entry.shift_period_id,
-    );
+  const invalidLockedEntry = lockedEntries.find(
+    (entry) =>
+      !entry.assignment_id ||
+      !assignmentIds.has(entry.assignment_id) ||
+      !Number.isInteger(entry.occurrence_number) ||
+      !Number.isInteger(entry.day_of_week) ||
+      !entry.shift_period_id,
+  );
 
   if (invalidLockedEntry) {
     throw new Error(
@@ -410,149 +316,97 @@ export async function buildSchedulePayload({
   const payload = {
     school_id: school.id,
 
-    academic_period_id:
-      activeAcademicPeriod.id,
+    academic_period_id: activeAcademicPeriod.id,
 
-    days: SCHOOL_DAYS.map(
-      (day) => day.value,
-    ),
+    days: SCHOOL_DAYS.map((day) => day.value),
 
-    shift_periods: (
-      shiftPeriods ?? []
-    ).map((period) => ({
+    shift_periods: (shiftPeriods ?? []).map((period) => ({
       id: period.id,
 
-      shift_id:
-        period.shift_id,
+      shift_id: period.shift_id,
 
-      period_number:
-        period.period_number,
+      period_number: period.period_number,
 
       name: period.name,
 
-      start_time:
-        removeSeconds(
-          period.start_time,
-        ),
+      start_time: removeSeconds(period.start_time),
 
-      end_time:
-        removeSeconds(
-          period.end_time,
-        ),
+      end_time: removeSeconds(period.end_time),
 
-      period_type:
-        period.period_type,
+      period_type: period.period_type,
     })),
 
-    groups: (
-      groups ?? []
-    ).map((group) => ({
+    groups: (groups ?? []).map((group) => ({
       id: group.id,
 
       name: group.name,
 
-      grade_level_id:
-        group.grade_level_id,
+      grade_level_id: group.grade_level_id,
 
-      shift_id:
-        group.shift_id,
+      shift_id: group.shift_id,
     })),
 
-    teachers: (
-      teachers ?? []
-    ).map((teacher) => ({
+    teachers: (teachers ?? []).map((teacher) => ({
       id: teacher.id,
 
-      name:
-        getTeacherName(
-          teacher,
-        ),
+      name: getTeacherName(teacher),
 
-      max_weekly_periods:
-        teacher.max_weekly_periods,
+      max_weekly_periods: teacher.max_weekly_periods,
 
-      max_daily_periods:
-        teacher.max_daily_periods,
+      max_daily_periods: teacher.max_daily_periods,
     })),
 
-    assignments:
-      usableAssignments.map(
-        (assignment) => ({
-          id: assignment.id,
+    assignments: usableAssignments.map((assignment) => ({
+      id: assignment.id,
 
-          group_id:
-            assignment.group_id,
+      group_id: assignment.group_id,
 
-          subject_id:
-            assignment.subject_id,
+      subject_id: assignment.subject_id,
 
-          teacher_id:
-            assignment.teacher_id,
+      teacher_id: assignment.teacher_id,
 
-          weekly_periods:
-            assignment.weekly_periods,
+      weekly_periods: assignment.weekly_periods,
 
-          max_periods_per_day:
-            assignment.max_periods_per_day,
+      max_periods_per_day: assignment.max_periods_per_day,
 
-          min_days_per_week:
-            assignment.min_days_per_week,
+      min_days_per_week: assignment.min_days_per_week,
 
-          allow_consecutive_periods:
-            assignment.allow_consecutive_periods,
+      allow_consecutive_periods: assignment.allow_consecutive_periods,
 
-          preferred_block_size:
-            assignment.preferred_block_size,
-        }),
-      ),
+      preferred_block_size: assignment.preferred_block_size,
+    })),
 
-    teacher_availability: (
-      availability ?? []
-    )
-      .filter((item) =>
-        activeTeacherIds.has(
-          item.teacher_id,
-        ),
-      )
+    teacher_availability: (availability ?? [])
+      .filter((item) => activeTeacherIds.has(item.teacher_id))
       .map((item) => ({
-        teacher_id:
-          item.teacher_id,
+        teacher_id: item.teacher_id,
 
-        day_of_week:
-          item.day_of_week,
+        day_of_week: item.day_of_week,
 
-        shift_period_id:
-          item.shift_period_id,
+        shift_period_id: item.shift_period_id,
 
-        availability_type:
-          item.availability_type,
+        availability_type: item.availability_type,
 
-        weight:
-          item.weight ?? 0,
+        weight: item.weight ?? 0,
       })),
 
-    locked_entries:
-      lockedEntries,
+    locked_entries: lockedEntries,
+    options: {
+      /*
+       * Primero buscamos cualquier horario válido.
+       * Después volveremos a activar la optimización.
+       */
+      max_time_seconds: 55,
+      num_workers: 8,
+      optimize_preferences: false,
+      random_seed: 0,
 
-   options: {
-  max_time_seconds: 15,
-
-  num_workers: 8,
-
-  optimize_preferences: true,
-
-  random_seed: 0,
-
-  penalize_avoid: 80,
-
-  reward_preferred: 40,
-
-  reward_required: 100,
-
-  penalize_late_period: 4,
-
-  penalize_isolated_teacher_period: 2,
-},
+      penalize_avoid: 80,
+      reward_preferred: 40,
+      reward_required: 100,
+      penalize_late_period: 4,
+      penalize_isolated_teacher_period: 2,
+    },
   };
 
   return {
@@ -562,8 +416,7 @@ export async function buildSchedulePayload({
 
     payload,
 
-    assignments:
-      usableAssignments,
+    assignments: usableAssignments,
 
     lockedEntries,
 
