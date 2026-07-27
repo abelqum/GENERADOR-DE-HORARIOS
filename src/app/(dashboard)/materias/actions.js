@@ -18,10 +18,7 @@ function isValidHexColor(value) {
   return /^#[0-9A-Fa-f]{6}$/.test(value);
 }
 
-export async function createSubjectAction(
-  _previousState,
-  formData,
-) {
+export async function createSubjectAction(_previousState, formData) {
   const name = getString(formData, "name");
   const code = normalizeCode(getString(formData, "code"));
   const color = getString(formData, "color");
@@ -50,15 +47,13 @@ export async function createSubjectAction(
   const { school } = await getCurrentSchool();
   const supabase = await createClient();
 
-  const { error } = await supabase
-    .from("subjects")
-    .insert({
-      school_id: school.id,
-      name,
-      code,
-      color,
-      active: true,
-    });
+  const { error } = await supabase.from("subjects").insert({
+    school_id: school.id,
+    name,
+    code,
+    color,
+    active: true,
+  });
 
   if (error) {
     console.error("Error creando materia:", error);
@@ -66,8 +61,7 @@ export async function createSubjectAction(
     if (error.code === "23505") {
       return {
         success: false,
-        message:
-          "Ya existe una materia con ese nombre o código.",
+        message: "Ya existe una materia con ese nombre o código.",
       };
     }
 
@@ -92,46 +86,40 @@ export async function updateSubjectAction(formData) {
   const name = getString(formData, "name");
   const code = normalizeCode(getString(formData, "code"));
   const color = getString(formData, "color");
-  const active =
-    getString(formData, "active") === "true";
+  const active = getString(formData, "active") === "true";
 
   if (!subjectId) {
     return {
       success: false,
-      message:
-        "No fue posible identificar la materia.",
+      message: "No fue posible identificar la materia.",
     };
   }
 
   if (name.length < 2) {
     return {
       success: false,
-      message:
-        "El nombre debe contener al menos dos caracteres.",
+      message: "El nombre debe contener al menos dos caracteres.",
     };
   }
 
   if (name.length > 100) {
     return {
       success: false,
-      message:
-        "El nombre no puede superar 100 caracteres.",
+      message: "El nombre no puede superar 100 caracteres.",
     };
   }
 
   if (code && code.length > 30) {
     return {
       success: false,
-      message:
-        "El código no puede superar 30 caracteres.",
+      message: "El código no puede superar 30 caracteres.",
     };
   }
 
   if (!isValidHexColor(color)) {
     return {
       success: false,
-      message:
-        "Selecciona un color hexadecimal válido.",
+      message: "Selecciona un color hexadecimal válido.",
     };
   }
 
@@ -142,10 +130,7 @@ export async function updateSubjectAction(formData) {
    * Comprobamos que la materia pertenezca a la escuela
    * antes de modificarla.
    */
-  const {
-    data: currentSubject,
-    error: subjectError,
-  } = await supabase
+  const { data: currentSubject, error: subjectError } = await supabase
     .from("subjects")
     .select("id")
     .eq("id", subjectId)
@@ -153,23 +138,18 @@ export async function updateSubjectAction(formData) {
     .maybeSingle();
 
   if (subjectError) {
-    console.error(
-      "Error consultando materia:",
-      subjectError,
-    );
+    console.error("Error consultando materia:", subjectError);
 
     return {
       success: false,
-      message:
-        "No fue posible consultar la materia.",
+      message: "No fue posible consultar la materia.",
     };
   }
 
   if (!currentSubject) {
     return {
       success: false,
-      message:
-        "La materia no existe o no pertenece a esta escuela.",
+      message: "La materia no existe o no pertenece a esta escuela.",
     };
   }
 
@@ -177,10 +157,7 @@ export async function updateSubjectAction(formData) {
    * Evitamos códigos duplicados.
    */
   if (code) {
-    const {
-      data: duplicatedCode,
-      error: duplicatedCodeError,
-    } = await supabase
+    const { data: duplicatedCode, error: duplicatedCodeError } = await supabase
       .from("subjects")
       .select("id")
       .eq("school_id", school.id)
@@ -189,23 +166,18 @@ export async function updateSubjectAction(formData) {
       .maybeSingle();
 
     if (duplicatedCodeError) {
-      console.error(
-        "Error verificando código:",
-        duplicatedCodeError,
-      );
+      console.error("Error verificando código:", duplicatedCodeError);
 
       return {
         success: false,
-        message:
-          "No fue posible verificar el código de la materia.",
+        message: "No fue posible verificar el código de la materia.",
       };
     }
 
     if (duplicatedCode) {
       return {
         success: false,
-        message:
-          "Ya existe otra materia con ese código.",
+        message: "Ya existe otra materia con ese código.",
       };
     }
   }
@@ -217,30 +189,24 @@ export async function updateSubjectAction(formData) {
       code,
       color,
       active,
-      updated_at:
-        new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     })
     .eq("id", subjectId)
     .eq("school_id", school.id);
 
   if (error) {
-    console.error(
-      "Error actualizando materia:",
-      error,
-    );
+    console.error("Error actualizando materia:", error);
 
     if (error.code === "23505") {
       return {
         success: false,
-        message:
-          "Ya existe otra materia con ese nombre o código.",
+        message: "Ya existe otra materia con ese nombre o código.",
       };
     }
 
     return {
       success: false,
-      message:
-        "No fue posible actualizar la materia.",
+      message: "No fue posible actualizar la materia.",
     };
   }
 
@@ -252,14 +218,12 @@ export async function updateSubjectAction(formData) {
 
   return {
     success: true,
-    message:
-      "Materia actualizada correctamente.",
+    message: "Materia actualizada correctamente.",
   };
 }
 export async function toggleSubjectAction(formData) {
   const subjectId = getString(formData, "subjectId");
-  const nextActive =
-    getString(formData, "nextActive") === "true";
+  const nextActive = getString(formData, "nextActive") === "true";
 
   if (!subjectId) {
     return;
@@ -291,70 +255,99 @@ export async function deleteSubjectAction(formData) {
   const subjectId = getString(formData, "subjectId");
 
   if (!subjectId) {
-    return;
+    return {
+      success: false,
+      message: "No fue posible identificar la materia.",
+    };
   }
 
   const { school } = await getCurrentSchool();
+
   const supabase = await createClient();
 
-  const [
-    { count: curriculumCount, error: curriculumError },
-    { count: teacherSubjectsCount, error: teacherSubjectsError },
-    { count: assignmentsCount, error: assignmentsError },
-  ] = await Promise.all([
-    supabase
-      .from("curriculum_requirements")
-      .select("*", {
-        count: "exact",
-        head: true,
-      })
-      .eq("school_id", school.id)
-      .eq("subject_id", subjectId),
+  const { data: subject, error: subjectError } = await supabase
+    .from("subjects")
+    .select("id, name")
+    .eq("id", subjectId)
+    .eq("school_id", school.id)
+    .maybeSingle();
 
-    supabase
-      .from("teacher_subjects")
-      .select("*", {
-        count: "exact",
-        head: true,
-      })
-      .eq("school_id", school.id)
-      .eq("subject_id", subjectId),
-
-    supabase
-      .from("teaching_assignments")
-      .select("*", {
-        count: "exact",
-        head: true,
-      })
-      .eq("school_id", school.id)
-      .eq("subject_id", subjectId),
-  ]);
-
-  if (
-    curriculumError ||
-    teacherSubjectsError ||
-    assignmentsError
-  ) {
-    console.error(
-      "Error verificando dependencias de la materia:",
-      curriculumError ||
-        teacherSubjectsError ||
-        assignmentsError,
-    );
-
-    return;
+  if (subjectError || !subject) {
+    return {
+      success: false,
+      message: "La materia no existe.",
+    };
   }
 
-  if (
-    (curriculumCount ?? 0) > 0 ||
-    (teacherSubjectsCount ?? 0) > 0 ||
-    (assignmentsCount ?? 0) > 0
-  ) {
-    console.error(
-      "No se puede eliminar una materia que está en uso.",
-    );
+  const { data: assignments, error: assignmentsError } = await supabase
+    .from("teaching_assignments")
+    .select("id")
+    .eq("school_id", school.id)
+    .eq("subject_id", subjectId);
 
-    return;
+  if (assignmentsError) {
+    return {
+      success: false,
+      message: "No fue posible consultar las asignaciones de la materia.",
+    };
+  }
+
+  const assignmentIds = (assignments ?? []).map((assignment) => assignment.id);
+
+  if (assignmentIds.length > 0) {
+    const { error: assignmentEntriesError } = await supabase
+      .from("schedule_entries")
+      .delete()
+      .eq("school_id", school.id)
+      .in("teaching_assignment_id", assignmentIds);
+
+    if (assignmentEntriesError) {
+      console.error("Error eliminando clases:", assignmentEntriesError);
+
+      return {
+        success: false,
+        message: "No fue posible eliminar las clases relacionadas.",
+      };
+    }
+  }
+
+  const { error: directEntriesError } = await supabase
+    .from("schedule_entries")
+    .delete()
+    .eq("school_id", school.id)
+    .eq("subject_id", subjectId);
+
+  if (directEntriesError) {
+    console.error("Error eliminando clases por materia:", directEntriesError);
+
+    return {
+      success: false,
+      message: "No fue posible eliminar las clases de la materia.",
+    };
+  }
+
+  const relations = [
+    "teaching_assignments",
+    "teacher_subjects",
+    "curriculum_requirements",
+  ];
+
+  for (const table of relations) {
+    const { error } = await supabase
+      .from(table)
+      .delete()
+      .eq("school_id", school.id)
+      .eq("subject_id", subjectId);
+
+    if (error) {
+      console.error(`Error eliminando registros de ${table}:`, error);
+
+      return {
+        success: false,
+        message:
+          "No fue posible eliminar toda la información relacionada con la materia.",
+      };
+    }
   }
 
   const { error } = await supabase
@@ -365,9 +358,23 @@ export async function deleteSubjectAction(formData) {
 
   if (error) {
     console.error("Error eliminando materia:", error);
-    return;
+
+    return {
+      success: false,
+      message: "No fue posible eliminar la materia.",
+    };
   }
 
   revalidatePath("/materias");
+  revalidatePath("/materias/carga");
+  revalidatePath("/profesores");
+  revalidatePath("/asignaciones");
+  revalidatePath("/generador");
+  revalidatePath("/horarios");
   revalidatePath("/");
+
+  return {
+    success: true,
+    message: `${subject.name} fue eliminada correctamente.`,
+  };
 }

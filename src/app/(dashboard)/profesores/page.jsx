@@ -11,11 +11,13 @@ export const dynamic = "force-dynamic";
 
 export default async function TeachersPage() {
   const { school } = await getCurrentSchool();
+
   const supabase = await createClient();
 
   const { data: teachers, error } = await supabase
     .from("teachers")
-    .select(`
+    .select(
+      `
       id,
       employee_number,
       first_name,
@@ -26,22 +28,37 @@ export default async function TeachersPage() {
       max_daily_periods,
       active,
       notes,
+
       teacher_subjects (
-        id
+        id,
+        subject_id,
+
+        subject:subjects (
+          id,
+          name,
+          code,
+          color,
+          active
+        )
       ),
+
       teacher_shifts (
         id
       ),
+
       teaching_assignments (
         id
       ),
+
       teacher_availability (
         id
       ),
+
       schedule_entries (
         id
       )
-    `)
+    `,
+    )
     .eq("school_id", school.id)
     .order("last_name", {
       ascending: true,
@@ -54,21 +71,29 @@ export default async function TeachersPage() {
     console.error("Error obteniendo profesores:", error);
   }
 
-  const normalizedTeachers = (teachers ?? []).map(
-    (teacher) => ({
+  const normalizedTeachers = (teachers ?? []).map((teacher) => {
+    const teacherSubjects = (teacher.teacher_subjects ?? []).filter(
+      (relation) => relation?.subject,
+    );
+
+    return {
       ...teacher,
-      subjectsCount:
-        teacher.teacher_subjects?.length ?? 0,
-      shiftsCount:
-        teacher.teacher_shifts?.length ?? 0,
-      assignmentsCount:
-        teacher.teaching_assignments?.length ?? 0,
-      availabilityCount:
-        teacher.teacher_availability?.length ?? 0,
-      entriesCount:
-        teacher.schedule_entries?.length ?? 0,
-    }),
-  );
+
+      teacher_subjects: teacherSubjects,
+
+      subjects: teacherSubjects.map((relation) => relation.subject),
+
+      subjectsCount: teacherSubjects.length,
+
+      shiftsCount: teacher.teacher_shifts?.length ?? 0,
+
+      assignmentsCount: teacher.teaching_assignments?.length ?? 0,
+
+      availabilityCount: teacher.teacher_availability?.length ?? 0,
+
+      entriesCount: teacher.schedule_entries?.length ?? 0,
+    };
+  });
 
   return (
     <div className="space-y-8">
@@ -77,20 +102,20 @@ export default async function TeachersPage() {
           Personal docente
         </p>
 
-        <h2 className="mt-2 text-3xl font-bold text-slate-950">
-          Profesores
-        </h2>
+        <h2 className="mt-2 text-3xl font-bold text-slate-950">Profesores</h2>
 
         <p className="mt-2 max-w-3xl text-slate-600">
-          Registra profesores y configura las materias,
-          turnos y cargas que pueden atender.
+          Registra profesores y configura las materias, turnos y cargas que
+          pueden atender.
         </p>
       </section>
 
-      <div className="grid items-start gap-6 xl:grid-cols-[420px_1fr]">
+      <div className="grid items-start gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
         <TeacherForm />
 
-        <TeachersTable teachers={normalizedTeachers} />
+        <div className="min-w-0">
+          <TeachersTable teachers={normalizedTeachers} />
+        </div>
       </div>
     </div>
   );
