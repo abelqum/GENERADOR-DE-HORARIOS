@@ -27,15 +27,161 @@ function logSupabaseError(title, error) {
   });
 }
 
+function groupBy(items, getKey) {
+  return items.reduce((result, item) => {
+    const key = getKey(item);
+
+    if (!result.has(key)) {
+      result.set(key, []);
+    }
+
+    result.get(key).push(item);
+
+    return result;
+  }, new Map());
+}
+
+function normalizeFixedGroupSlots({ groups, shiftPeriods, fixedPeriods }) {
+  const periodsById = new Map(
+    shiftPeriods.map((period) => [period.id, period]),
+  );
+
+  const fixedPeriodsByGroup = groupBy(
+    fixedPeriods,
+    (fixedPeriod) => fixedPeriod.group_id,
+  );
+
+  const normalizedSlots = [];
+
+  for (const group of groups) {
+    const groupFixedPeriods = [
+      ...(fixedPeriodsByGroup.get(group.id) ?? []),
+    ].sort((first, second) => first.slot_order - second.slot_order);
+
+    if (groupFixedPeriods.length !== 3) {
+      throw new Error(
+        `El grupo ${group.name} debe tener exactamente tres horas fijas de taller antes de generar el horario.`,
+      );
+    }
+
+    const blockIds = new Set(
+      groupFixedPeriods.map((fixedPeriod) => fixedPeriod.block_id),
+    );
+
+    if (blockIds.size !== 1) {
+      throw new Error(
+        `Las horas de taller del grupo ${group.name} no pertenecen al mismo bloque.`,
+      );
+    }
+
+    const days = new Set(
+      groupFixedPeriods.map((fixedPeriod) => fixedPeriod.day_of_week),
+    );
+
+    if (days.size !== 1) {
+      throw new Error(
+        `Las tres horas de taller del grupo ${group.name} deben estar en el mismo día.`,
+      );
+    }
+
+    const slotOrders = groupFixedPeriods.map(
+      (fixedPeriod) => fixedPeriod.slot_order,
+    );
+
+    if (slotOrders[0] !== 1 || slotOrders[1] !== 2 || slotOrders[2] !== 3) {
+      throw new Error(
+        `El bloque de taller del grupo ${group.name} no contiene los tres espacios correctamente ordenados.`,
+      );
+    }
+
+    const periodIds = new Set(
+      groupFixedPeriods.map((fixedPeriod) => fixedPeriod.shift_period_id),
+    );
+
+    if (periodIds.size !== 3) {
+      throw new Error(
+        `El taller del grupo ${group.name} contiene horas repetidas.`,
+      );
+    }
+
+    const resolvedPeriods = groupFixedPeriods.map((fixedPeriod) => {
+      const period = periodsById.get(fixedPeriod.shift_period_id);
+
+      if (!period) {
+        throw new Error(
+          `Una hora de taller del grupo ${group.name} ya no existe.`,
+        );
+      }
+
+      if (period.shift_id !== group.shift_id) {
+        throw new Error(
+          `Una hora de taller del grupo ${group.name} no pertenece a su turno.`,
+        );
+      }
+
+      if (period.period_type !== "class") {
+        throw new Error(
+          `El taller del grupo ${group.name} solamente puede ocupar horas de clase.`,
+        );
+      }
+
+      if (!period.active) {
+        throw new Error(
+          `Una hora de taller del grupo ${group.name} está inactiva.`,
+        );
+      }
+
+      if (!SCHOOL_DAYS.some((day) => day.value === fixedPeriod.day_of_week)) {
+        throw new Error(
+          `El taller del grupo ${group.name} tiene un día inválido.`,
+        );
+      }
+
+      return period;
+    });
+
+    const periodsAreConsecutive =
+      resolvedPeriods[1].period_number ===
+        resolvedPeriods[0].period_number + 1 &&
+      resolvedPeriods[2].period_number === resolvedPeriods[1].period_number + 1;
+
+    if (!periodsAreConsecutive) {
+      throw new Error(
+        `Las tres horas de taller del grupo ${group.name} deben ser consecutivas y no pueden atravesar un receso.`,
+      );
+    }
+
+    groupFixedPeriods.forEach((fixedPeriod) => {
+      normalizedSlots.push({
+        id: fixedPeriod.id,
+
+        block_id: fixedPeriod.block_id,
+
+        group_id: fixedPeriod.group_id,
+
+        day_of_week: fixedPeriod.day_of_week,
+
+        shift_period_id: fixedPeriod.shift_period_id,
+
+        slot_order: fixedPeriod.slot_order,
+
+        activity_type: fixedPeriod.activity_type || "workshop",
+
+        label: fixedPeriod.label || "Taller",
+
+        color: fixedPeriod.color || "#f59e0b",
+      });
+    });
+  }
+
+  return normalizedSlots;
+}
+
 export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
   const { school } = await getCurrentSchool();
 
   const supabase = await createClient();
 
-  /*
-   * El ciclo activo debe consultarse antes de utilizarlo
-   * para validar una versión base.
-   */
   const { data: activeAcademicPeriod, error: academicPeriodError } =
     await supabase
       .from("academic_periods")
@@ -64,11 +210,6 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
 
   let lockedEntries = [];
 
-  /*
-   * Durante la reoptimización, las clases bloqueadas
-   * de la versión anterior se convierten en restricciones
-   * obligatorias para el solver.
-   */
   if (sourceVersionId) {
     const { data: sourceVersion, error: sourceVersionError } = await supabase
       .from("schedule_versions")
@@ -143,6 +284,7 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
     { data: teachers, error: teachersError },
     { data: assignments, error: assignmentsError },
     { data: availability, error: availabilityError },
+    { data: fixedPeriods, error: fixedPeriodsError },
   ] = await Promise.all([
     supabase
       .from("shift_periods")
@@ -226,6 +368,28 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
       )
       .eq("school_id", school.id)
       .eq("academic_period_id", activeAcademicPeriod.id),
+
+    supabase
+      .from("group_fixed_periods")
+      .select(
+        `
+        id,
+        block_id,
+        group_id,
+        day_of_week,
+        shift_period_id,
+        slot_order,
+        activity_type,
+        label,
+        color
+      `,
+      )
+      .eq("school_id", school.id)
+      .eq("academic_period_id", activeAcademicPeriod.id)
+      .eq("activity_type", "workshop")
+      .order("slot_order", {
+        ascending: true,
+      }),
   ]);
 
   const queryErrors = [
@@ -234,6 +398,7 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
     teachersError,
     assignmentsError,
     availabilityError,
+    fixedPeriodsError,
   ].filter(Boolean);
 
   if (queryErrors.length > 0) {
@@ -274,10 +439,6 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
     (teachers ?? []).map((teacher) => teacher.id),
   );
 
-  /*
-   * Evitamos mandar al solver asignaciones que
-   * pertenecen a grupos o profesores inactivos.
-   */
   const usableAssignments = (assignments ?? []).filter(
     (assignment) =>
       activeGroupIds.has(assignment.group_id) &&
@@ -294,10 +455,6 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
     usableAssignments.map((assignment) => assignment.id),
   );
 
-  /*
-   * Una clase bloqueada debe continuar vinculada
-   * con una asignación que todavía exista.
-   */
   const invalidLockedEntry = lockedEntries.find(
     (entry) =>
       !entry.assignment_id ||
@@ -312,6 +469,12 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
       "Una clase bloqueada de la versión base ya no corresponde con la configuración actual.",
     );
   }
+
+  const fixedGroupSlots = normalizeFixedGroupSlots({
+    groups: groups ?? [],
+    shiftPeriods: shiftPeriods ?? [],
+    fixedPeriods: fixedPeriods ?? [],
+  });
 
   const payload = {
     school_id: school.id,
@@ -391,21 +554,31 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
       })),
 
     locked_entries: lockedEntries,
+
+    fixed_group_slots: fixedGroupSlots,
+
     options: {
-      /*
-       * Primero buscamos cualquier horario válido.
-       * Después volveremos a activar la optimización.
-       */
       max_time_seconds: 55,
       num_workers: 8,
+
+      /*
+       * Todavía buscamos primero cualquier
+       * horario válido. Después activaremos
+       * la optimización de huecos docentes.
+       */
       optimize_preferences: false,
+
       random_seed: 0,
 
       penalize_avoid: 80,
       reward_preferred: 40,
       reward_required: 100,
+
       penalize_late_period: 4,
+
       penalize_isolated_teacher_period: 2,
+
+      reward_consecutive_assignment_periods: 15,
     },
   };
 
@@ -419,6 +592,8 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
     assignments: usableAssignments,
 
     lockedEntries,
+
+    fixedGroupSlots,
 
     sourceVersionId,
   };
