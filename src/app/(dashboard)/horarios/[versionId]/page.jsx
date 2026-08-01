@@ -86,6 +86,14 @@ function sortGroups(firstGroup, secondGroup) {
   );
 }
 
+function normalizeWorkshopColor(value) {
+  if (typeof value === "string" && /^#[0-9A-Fa-f]{6}$/.test(value)) {
+    return value;
+  }
+
+  return "#f59e0b";
+}
+
 export default async function ScheduleVersionPage({ params, searchParams }) {
   const { versionId } = await params;
   const query = await searchParams;
@@ -102,6 +110,11 @@ export default async function ScheduleVersionPage({ params, searchParams }) {
 
   const supabase = await createClient();
 
+  /*
+   * Primero se consulta la versión porque su
+   * academic_period_id se necesita para cargar
+   * los grupos del ciclo correcto.
+   */
   const { data: version, error: versionError } = await supabase
     .from("schedule_versions")
     .select(
@@ -229,6 +242,11 @@ export default async function ScheduleVersionPage({ params, searchParams }) {
         ascending: true,
       }),
 
+    /*
+     * El conteo de integridad incluye únicamente
+     * clases académicas. Los talleres y servicios
+     * no cuentan como clases del solver.
+     */
     supabase
       .from("schedule_entries")
       .select("*", {
@@ -296,6 +314,40 @@ export default async function ScheduleVersionPage({ params, searchParams }) {
       ? requestedTeacherId
       : (normalizedTeachers[0]?.id ?? null);
 
+  /*
+   * Etiquetas administrativas Libre/Servicio.
+   * Solamente se consultan en la vista del profesor.
+   */
+  let teacherSlotLabels = [];
+  let teacherSlotLabelsError = null;
+
+  if (selectedView === "teacher" && selectedTeacherId) {
+    const { data: teacherSlotLabelsData, error: slotLabelsError } =
+      await supabase
+        .from("schedule_teacher_slot_labels")
+        .select(
+          `
+        id,
+        teacher_id,
+        day_of_week,
+        shift_period_id,
+        label
+      `,
+        )
+        .eq("school_id", school.id)
+        .eq("schedule_version_id", version.id)
+        .eq("teacher_id", selectedTeacherId);
+
+    teacherSlotLabelsError = slotLabelsError;
+
+    logSupabaseError(
+      "Error obteniendo etiquetas del profesor:",
+      teacherSlotLabelsError,
+    );
+
+    teacherSlotLabels = teacherSlotLabelsData ?? [];
+  }
+
   const selectedGroup =
     normalizedGroups.find((group) => group.id === selectedGroupId) ?? null;
 
@@ -308,6 +360,7 @@ export default async function ScheduleVersionPage({ params, searchParams }) {
   if (selectedView === "group" && selectedGroup) {
     selectedPdfEntity = {
       id: selectedGroup.id,
+
       name: selectedGroup.name,
 
       secondaryText: [
@@ -335,65 +388,63 @@ export default async function ScheduleVersionPage({ params, searchParams }) {
   }
 
   /*
-   * En la vista general no se aplica
-   * ningún filtro de grupo o profesor.
-   * Se cargan todas las clases.
+   * Consulta de clases normales.
    */
   let entriesQuery = supabase
     .from("schedule_entries")
     .select(
       `
+      id,
+      teaching_assignment_id,
+      group_id,
+      subject_id,
+      teacher_id,
+      day_of_week,
+      shift_period_id,
+      occurrence_number,
+      locked,
+
+      teaching_assignment:teaching_assignments (
         id,
-        teaching_assignment_id,
         group_id,
         subject_id,
         teacher_id,
-        day_of_week,
-        shift_period_id,
-        occurrence_number,
-        locked,
 
-        teaching_assignment:teaching_assignments (
+        group:groups (
           id,
-          group_id,
-          subject_id,
-          teacher_id,
+          name,
+          academic_period_id,
+          shift_id,
 
-          group:groups (
+          grade_level:grade_levels (
             id,
             name,
-            academic_period_id,
-            shift_id,
-
-            grade_level:grade_levels (
-              id,
-              name,
-              order_number
-            ),
-
-            shift:shifts (
-              id,
-              name,
-              start_time,
-              end_time
-            )
+            order_number
           ),
 
-          subject:subjects (
+          shift:shifts (
             id,
             name,
-            code,
-            color
-          ),
-
-          teacher:teachers (
-            id,
-            first_name,
-            last_name,
-            employee_number
+            start_time,
+            end_time
           )
+        ),
+
+        subject:subjects (
+          id,
+          name,
+          code,
+          color
+        ),
+
+        teacher:teachers (
+          id,
+          first_name,
+          last_name,
+          employee_number
         )
-      `,
+      )
+    `,
     )
     .eq("school_id", school.id)
     .eq("schedule_version_id", version.id);
@@ -406,9 +457,58 @@ export default async function ScheduleVersionPage({ params, searchParams }) {
     entriesQuery = entriesQuery.eq("teacher_id", selectedTeacherId);
   }
 
-  const { data: scheduleEntries, error: entriesError } = await entriesQuery;
+  /*
+   * Consulta de talleres guardados como snapshot.
+   *
+   * En la vista de profesor no se consultan porque
+   * el taller no pertenece a ningún profesor.
+   */
+  let fixedEntriesPromise = Promise.resolve({
+    data: [],
+    error: null,
+  });
+
+  if (selectedView !== "teacher") {
+    let fixedEntriesQuery = supabase
+      .from("schedule_fixed_entries")
+      .select(
+        `
+        id,
+        schedule_version_id,
+        source_fixed_period_id,
+        block_id,
+        group_id,
+        day_of_week,
+        shift_period_id,
+        slot_order,
+        activity_type,
+        label,
+        color,
+        locked
+      `,
+      )
+      .eq("school_id", school.id)
+      .eq("schedule_version_id", version.id)
+      .eq("activity_type", "workshop")
+      .order("slot_order", {
+        ascending: true,
+      });
+
+    if (selectedView === "group" && selectedGroupId) {
+      fixedEntriesQuery = fixedEntriesQuery.eq("group_id", selectedGroupId);
+    }
+
+    fixedEntriesPromise = fixedEntriesQuery;
+  }
+
+  const [
+    { data: scheduleEntries, error: entriesError },
+    { data: fixedEntries, error: fixedEntriesError },
+  ] = await Promise.all([entriesQuery, fixedEntriesPromise]);
 
   logSupabaseError("Error obteniendo entradas del horario:", entriesError);
+
+  logSupabaseError("Error obteniendo talleres del horario:", fixedEntriesError);
 
   const normalizedEntries = (scheduleEntries ?? []).map((entry) => {
     const teachingAssignment = normalizeRelation(entry.teaching_assignment);
@@ -444,6 +544,28 @@ export default async function ScheduleVersionPage({ params, searchParams }) {
     };
   });
 
+  const groupsById = new Map(
+    normalizedGroups.map((group) => [group.id, group]),
+  );
+
+  /*
+   * Aunque en la base de datos exista otro texto,
+   * visualmente siempre se muestra como Taller.
+   */
+  const normalizedFixedEntries = (fixedEntries ?? []).map((fixedEntry) => ({
+    ...fixedEntry,
+
+    label: "Taller",
+
+    activity_type: "workshop",
+
+    color: normalizeWorkshopColor(fixedEntry.color),
+
+    locked: true,
+
+    group: groupsById.get(fixedEntry.group_id) ?? null,
+  }));
+
   let relevantShiftIds = new Set();
 
   if (selectedView === "group" && selectedGroup?.shift?.id) {
@@ -451,9 +573,23 @@ export default async function ScheduleVersionPage({ params, searchParams }) {
   }
 
   if (selectedView === "teacher") {
-    relevantShiftIds = new Set(
-      normalizedEntries.map((entry) => entry.group?.shift?.id).filter(Boolean),
+    /*
+     * Los turnos relevantes se obtienen tanto de
+     * las clases como de las horas marcadas Servicio.
+     */
+    const shiftIdByPeriodId = new Map(
+      normalizedPeriods.map((period) => [period.id, period.shift_id]),
     );
+
+    const classShiftIds = normalizedEntries
+      .map((entry) => entry.group?.shift?.id)
+      .filter(Boolean);
+
+    const serviceShiftIds = teacherSlotLabels
+      .map((slotLabel) => shiftIdByPeriodId.get(slotLabel.shift_period_id))
+      .filter(Boolean);
+
+    relevantShiftIds = new Set([...classShiftIds, ...serviceShiftIds]);
   }
 
   if (selectedView === "general") {
@@ -611,6 +747,34 @@ export default async function ScheduleVersionPage({ params, searchParams }) {
         </Alert>
       )}
 
+      {fixedEntriesError && (
+        <Alert type="error">
+          <div>
+            <p className="font-semibold">No fue posible cargar los talleres</p>
+
+            <p className="mt-1">
+              Las clases pueden mostrarse, pero los espacios de taller podrían
+              aparecer como libres.
+            </p>
+          </div>
+        </Alert>
+      )}
+
+      {selectedView === "teacher" && teacherSlotLabelsError && (
+        <Alert type="error">
+          <div>
+            <p className="font-semibold">
+              No fue posible cargar Libre y Servicio
+            </p>
+
+            <p className="mt-1">
+              El horario puede mostrarse, pero las horas administrativas del
+              profesor no están disponibles.
+            </p>
+          </div>
+        </Alert>
+      )}
+
       <section className="flex flex-wrap items-center gap-3">
         <ScheduleVersionActions
           version={version}
@@ -634,6 +798,8 @@ export default async function ScheduleVersionPage({ params, searchParams }) {
           shifts={shifts}
           groups={normalizedGroups}
           entries={normalizedEntries}
+          fixedEntries={normalizedFixedEntries}
+          teacherSlotLabels={teacherSlotLabels}
         />
       </section>
 
@@ -652,9 +818,9 @@ export default async function ScheduleVersionPage({ params, searchParams }) {
             />
           ) : (
             <div className="max-w-xl rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
-              La vista general muestra grupo, materia y profesor. En versiones
-              en borrador puedes arrastrar una clase hacia otro espacio del
-              mismo grupo.
+              La vista general muestra grupo, materia, profesor y talleres
+              fijos. En versiones en borrador puedes arrastrar una clase hacia
+              otro espacio libre del mismo grupo.
             </div>
           )}
         </div>
@@ -707,6 +873,7 @@ export default async function ScheduleVersionPage({ params, searchParams }) {
           shifts={shifts}
           groups={normalizedGroups}
           entries={normalizedEntries}
+          fixedEntries={normalizedFixedEntries}
         />
       ) : (
         <EditableScheduleGrid
@@ -714,7 +881,10 @@ export default async function ScheduleVersionPage({ params, searchParams }) {
           versionStatus={version.status}
           shifts={shifts}
           entries={normalizedEntries}
+          fixedEntries={normalizedFixedEntries}
           view={selectedView}
+          teacherId={selectedView === "teacher" ? selectedTeacherId : null}
+          teacherSlotLabels={teacherSlotLabels}
         />
       )}
     </div>

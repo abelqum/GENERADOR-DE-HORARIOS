@@ -23,16 +23,27 @@ export default function SchoolSettingsForm({ school }) {
   async function handleEdit() {
     const { value: formValues } = await Swal.fire({
       title: "Editar escuela",
+
       width: 600,
+
       showCancelButton: true,
+
       confirmButtonText: "Guardar cambios",
+
       cancelButtonText: "Cancelar",
+
       focusConfirm: false,
+
       html: `
         <div style="text-align:left">
           <label
             for="school-name"
-            style="display:block; margin-bottom:6px; font-size:14px; font-weight:600;"
+            style="
+              display:block;
+              margin-bottom:6px;
+              font-size:14px;
+              font-weight:600;
+            "
           >
             Nombre de la escuela
           </label>
@@ -41,12 +52,54 @@ export default function SchoolSettingsForm({ school }) {
             id="school-name"
             class="swal2-input"
             value="${escapeHtml(school.name)}"
-            style="width:100%; margin:0 0 16px 0;"
+            style="
+              width:100%;
+              margin:0 0 16px 0;
+            "
           />
 
           <label
+            for="school-director-name"
+            style="
+              display:block;
+              margin-bottom:6px;
+              font-size:14px;
+              font-weight:600;
+            "
+          >
+            Nombre de la directora
+          </label>
+
+          <input
+            id="school-director-name"
+            class="swal2-input"
+            value="${escapeHtml(school.director_name)}"
+            placeholder="Ejemplo: María Guadalupe Hernández López"
+            style="
+              width:100%;
+              margin:0 0 16px 0;
+            "
+          />
+
+          <p
+            style="
+              margin:-8px 0 16px 0;
+              color:#64748b;
+              font-size:12px;
+              line-height:1.5;
+            "
+          >
+            Este nombre aparecerá debajo de la línea de firma en los horarios de los profesores.
+          </p>
+
+          <label
             for="school-code"
-            style="display:block; margin-bottom:6px; font-size:14px; font-weight:600;"
+            style="
+              display:block;
+              margin-bottom:6px;
+              font-size:14px;
+              font-weight:600;
+            "
           >
             Clave o código
           </label>
@@ -55,12 +108,20 @@ export default function SchoolSettingsForm({ school }) {
             id="school-code"
             class="swal2-input"
             value="${escapeHtml(school.code)}"
-            style="width:100%; margin:0 0 16px 0;"
+            style="
+              width:100%;
+              margin:0 0 16px 0;
+            "
           />
 
           <label
             for="school-email"
-            style="display:block; margin-bottom:6px; font-size:14px; font-weight:600;"
+            style="
+              display:block;
+              margin-bottom:6px;
+              font-size:14px;
+              font-weight:600;
+            "
           >
             Correo institucional
           </label>
@@ -70,12 +131,20 @@ export default function SchoolSettingsForm({ school }) {
             type="email"
             class="swal2-input"
             value="${escapeHtml(school.email)}"
-            style="width:100%; margin:0 0 16px 0;"
+            style="
+              width:100%;
+              margin:0 0 16px 0;
+            "
           />
 
           <label
             for="school-phone"
-            style="display:block; margin-bottom:6px; font-size:14px; font-weight:600;"
+            style="
+              display:block;
+              margin-bottom:6px;
+              font-size:14px;
+              font-weight:600;
+            "
           >
             Teléfono
           </label>
@@ -84,12 +153,20 @@ export default function SchoolSettingsForm({ school }) {
             id="school-phone"
             class="swal2-input"
             value="${escapeHtml(school.phone)}"
-            style="width:100%; margin:0 0 16px 0;"
+            style="
+              width:100%;
+              margin:0 0 16px 0;
+            "
           />
 
           <label
             for="school-address"
-            style="display:block; margin-bottom:6px; font-size:14px; font-weight:600;"
+            style="
+              display:block;
+              margin-bottom:6px;
+              font-size:14px;
+              font-weight:600;
+            "
           >
             Dirección
           </label>
@@ -97,31 +174,56 @@ export default function SchoolSettingsForm({ school }) {
           <textarea
             id="school-address"
             class="swal2-textarea"
-            style="width:100%; margin:0;"
+            style="
+              width:100%;
+              margin:0;
+            "
           >${escapeHtml(school.address)}</textarea>
         </div>
       `,
+
       preConfirm: () => {
-        const name = document.getElementById("school-name")?.value.trim();
+        const name = document.getElementById("school-name")?.value.trim() ?? "";
 
-        const code = document.getElementById("school-code")?.value.trim();
+        const directorName =
+          document.getElementById("school-director-name")?.value.trim() ?? "";
 
-        const email = document.getElementById("school-email")?.value.trim();
+        const code = document.getElementById("school-code")?.value.trim() ?? "";
 
-        const phone = document.getElementById("school-phone")?.value.trim();
+        const email =
+          document.getElementById("school-email")?.value.trim() ?? "";
 
-        const address = document.getElementById("school-address")?.value.trim();
+        const phone =
+          document.getElementById("school-phone")?.value.trim() ?? "";
+
+        const address =
+          document.getElementById("school-address")?.value.trim() ?? "";
 
         if (!name || name.length < 3) {
           Swal.showValidationMessage(
-            "El nombre debe tener al menos 3 caracteres.",
+            "El nombre de la escuela debe tener al menos 3 caracteres.",
           );
+
+          return false;
+        }
+
+        if (!directorName || directorName.length < 3) {
+          Swal.showValidationMessage(
+            "Escribe el nombre completo de la directora.",
+          );
+
+          return false;
+        }
+
+        if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          Swal.showValidationMessage("Escribe un correo institucional válido.");
 
           return false;
         }
 
         return {
           name,
+          directorName,
           code,
           email,
           phone,
@@ -138,8 +240,11 @@ export default function SchoolSettingsForm({ school }) {
 
     Swal.fire({
       title: "Guardando escuela",
+
       allowOutsideClick: false,
+
       showConfirmButton: false,
+
       didOpen: () => {
         Swal.showLoading();
       },
@@ -149,6 +254,8 @@ export default function SchoolSettingsForm({ school }) {
       const formData = new FormData();
 
       formData.set("name", formValues.name);
+
+      formData.set("director_name", formValues.directorName);
 
       formData.set("code", formValues.code);
 
@@ -165,7 +272,9 @@ export default function SchoolSettingsForm({ school }) {
       if (!result?.success) {
         await Swal.fire({
           icon: "error",
+
           title: "No se pudo actualizar",
+
           text: result?.message || "No fue posible actualizar la escuela.",
         });
 
@@ -174,9 +283,13 @@ export default function SchoolSettingsForm({ school }) {
 
       await Swal.fire({
         icon: "success",
+
         title: "Escuela actualizada",
+
         text: result.message,
+
         timer: 1500,
+
         showConfirmButton: false,
       });
 
@@ -188,7 +301,9 @@ export default function SchoolSettingsForm({ school }) {
 
       await Swal.fire({
         icon: "error",
+
         title: "Ocurrió un error",
+
         text: "No fue posible guardar la información.",
       });
     } finally {
@@ -212,6 +327,8 @@ export default function SchoolSettingsForm({ school }) {
             </h3>
 
             <div className="mt-3 space-y-1 text-sm text-slate-500">
+              {school.director_name && <p>Directora: {school.director_name}</p>}
+
               {school.code && <p>Clave: {school.code}</p>}
 
               {school.email && <p>{school.email}</p>}

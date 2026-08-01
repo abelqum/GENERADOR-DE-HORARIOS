@@ -1,14 +1,146 @@
 "use client";
 
 import { Download, LoaderCircle } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
+import { getSchoolDirectorNameAction } from "@/app/(dashboard)/horarios/[versionId]/pdf-actions";
 import {
   showConfirmAlert,
   showErrorAlert,
   showSuccessAlert,
 } from "@/lib/alerts/swal";
 import { generateSchedulePdf } from "@/lib/pdf/generateSchedulePdf";
+
+function createWorkshopEntries({ fixedEntries, groups }) {
+  const groupsById = new Map(groups.map((group) => [group.id, group]));
+
+  return fixedEntries.map((fixedEntry) => {
+    const group =
+      groupsById.get(fixedEntry.group_id) ?? fixedEntry.group ?? null;
+
+    return {
+      /*
+       * No se guarda en Supabase.
+       * Solamente existe durante la
+       * generación del PDF.
+       */
+      id: `workshop-${fixedEntry.id}`,
+
+      group_id: fixedEntry.group_id,
+
+      subject_id: null,
+
+      teacher_id: null,
+
+      day_of_week: fixedEntry.day_of_week,
+
+      shift_period_id: fixedEntry.shift_period_id,
+
+      occurrence_number: fixedEntry.slot_order ?? 1,
+
+      locked: true,
+
+      is_fixed_activity: true,
+
+      activity_type: "workshop",
+
+      label: "Taller",
+
+      subject: {
+        id: `workshop-subject-${fixedEntry.id}`,
+
+        name: "Taller",
+
+        code: "TALLER",
+
+        color: fixedEntry.color || "#f59e0b",
+      },
+
+      teacher: {
+        id: `workshop-teacher-${fixedEntry.id}`,
+
+        first_name: "",
+
+        last_name: "",
+
+        employee_number: null,
+      },
+
+      group,
+    };
+  });
+}
+
+function createTeacherServiceEntries({ teacherSlotLabels, selectedEntity }) {
+  if (!selectedEntity?.id) {
+    return [];
+  }
+
+  return teacherSlotLabels
+    .filter((slotLabel) => {
+      const dayOfWeek = Number(slotLabel?.day_of_week);
+
+      return (
+        slotLabel?.label === "service" &&
+        slotLabel?.shift_period_id &&
+        Number.isInteger(dayOfWeek)
+      );
+    })
+    .map((slotLabel) => {
+      const dayOfWeek = Number(slotLabel.day_of_week);
+
+      return {
+        /*
+         * Entrada temporal.
+         *
+         * No se guarda como clase.
+         */
+        id: `service-${slotLabel.id}`,
+
+        group_id: null,
+
+        subject_id: null,
+
+        teacher_id: selectedEntity.id,
+
+        day_of_week: dayOfWeek,
+
+        shift_period_id: slotLabel.shift_period_id,
+
+        occurrence_number: 1,
+
+        locked: true,
+
+        is_teacher_slot_label: true,
+
+        activity_type: "service",
+
+        label: "Servicio",
+
+        subject: {
+          id: `service-subject-${slotLabel.id}`,
+
+          name: "Servicio",
+
+          code: "SERVICIO",
+
+          color: "#2563eb",
+        },
+
+        teacher: {
+          id: selectedEntity.id,
+
+          first_name: "",
+
+          last_name: "",
+
+          employee_number: null,
+        },
+
+        group: null,
+      };
+    });
+}
 
 export default function ExportSchedulePdfButton({
   schoolName,
@@ -19,12 +151,38 @@ export default function ExportSchedulePdfButton({
   shifts = [],
   groups = [],
   entries = [],
+  fixedEntries = [],
+  teacherSlotLabels = [],
 }) {
   const [isGenerating, setIsGenerating] = useState(false);
 
   const isGeneralView = view === "general";
 
   const isDisabled = isGenerating || (!isGeneralView && !selectedEntity);
+
+  const pdfEntries = useMemo(() => {
+    if (view === "teacher") {
+      const serviceEntries = createTeacherServiceEntries({
+        teacherSlotLabels,
+        selectedEntity,
+      });
+
+      /*
+       * Las clases se colocan después.
+       *
+       * Si por algún error existiera Servicio
+       * sobre una clase, la clase tendrá prioridad.
+       */
+      return [...serviceEntries, ...entries];
+    }
+
+    const workshopEntries = createWorkshopEntries({
+      fixedEntries,
+      groups,
+    });
+
+    return [...entries, ...workshopEntries];
+  }, [entries, fixedEntries, groups, selectedEntity, teacherSlotLabels, view]);
 
   async function handleExport() {
     if (isGenerating) {
@@ -34,6 +192,7 @@ export default function ExportSchedulePdfButton({
     if (!Array.isArray(shifts) || shifts.length === 0) {
       await showErrorAlert({
         title: "No hay horario para exportar",
+
         text: "No existen turnos u horas configuradas para generar el PDF.",
       });
 
@@ -43,6 +202,7 @@ export default function ExportSchedulePdfButton({
     if (!isGeneralView && !selectedEntity) {
       await showErrorAlert({
         title: "Selecciona un horario",
+
         text: "Selecciona un grupo o profesor antes de exportar.",
       });
 
@@ -52,6 +212,7 @@ export default function ExportSchedulePdfButton({
     if (isGeneralView && (!Array.isArray(groups) || groups.length === 0)) {
       await showErrorAlert({
         title: "No hay grupos para exportar",
+
         text: "La vista general necesita al menos un grupo registrado.",
       });
 
@@ -66,8 +227,10 @@ export default function ExportSchedulePdfButton({
         : "¿Descargar este horario?",
 
       text: isGeneralView
-        ? "Se generará un PDF con todos los grupos, materias y profesores."
-        : "Se generará el horario seleccionado en formato PDF.",
+        ? "Se generará un PDF con todos los grupos, materias, profesores y talleres."
+        : view === "group"
+          ? "Se generará el horario del grupo incluyendo sus talleres fijos."
+          : "Se generará el horario del profesor en formato PDF.",
 
       confirmButtonText: "Sí, descargar",
 
@@ -81,15 +244,48 @@ export default function ExportSchedulePdfButton({
     setIsGenerating(true);
 
     try {
+      let directorName = "";
+
+      /*
+       * El nombre de la directora solamente
+       * es necesario para el PDF del profesor.
+       */
+      if (view === "teacher") {
+        const directorResult = await getSchoolDirectorNameAction();
+
+        if (!directorResult?.success) {
+          await showErrorAlert({
+            title: "No se encontró la directora",
+
+            text:
+              directorResult?.message ||
+              "No fue posible obtener el nombre de la directora.",
+          });
+
+          return;
+        }
+
+        directorName = directorResult.directorName;
+      }
+
       generateSchedulePdf({
         schoolName,
+
         academicPeriodName,
+
         versionName,
+
         view,
+
         selectedEntity,
+
         shifts,
+
         groups,
-        entries,
+
+        entries: pdfEntries,
+
+        directorName,
       });
 
       await showSuccessAlert({
@@ -97,7 +293,9 @@ export default function ExportSchedulePdfButton({
 
         text: isGeneralView
           ? "El horario general se descargó correctamente."
-          : "El horario se descargó correctamente.",
+          : view === "group"
+            ? "El horario del grupo se descargó con sus talleres."
+            : "El horario del profesor se descargó correctamente.",
       });
     } catch (error) {
       console.error("Error generando PDF:", error);

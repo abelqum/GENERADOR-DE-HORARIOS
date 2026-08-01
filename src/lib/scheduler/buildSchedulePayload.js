@@ -131,7 +131,11 @@ function normalizeFixedGroupSlots({ groups, shiftPeriods, fixedPeriods }) {
         );
       }
 
-      if (!SCHOOL_DAYS.some((day) => day.value === fixedPeriod.day_of_week)) {
+      const validDay = SCHOOL_DAYS.some(
+        (day) => day.value === fixedPeriod.day_of_week,
+      );
+
+      if (!validDay) {
         throw new Error(
           `El taller del grupo ${group.name} tiene un día inválido.`,
         );
@@ -175,6 +179,26 @@ function normalizeFixedGroupSlots({ groups, shiftPeriods, fixedPeriods }) {
   }
 
   return normalizedSlots;
+}
+
+function calculateGroupLoads({ groups, assignments }) {
+  return groups.map((group) => {
+    const groupAssignments = assignments.filter(
+      (assignment) => assignment.group_id === group.id,
+    );
+
+    const requiredHours = groupAssignments.reduce(
+      (total, assignment) => total + Number(assignment.weekly_periods ?? 0),
+      0,
+    );
+
+    return {
+      groupId: group.id,
+      groupName: group.name,
+      assignments: groupAssignments.length,
+      requiredHours,
+    };
+  });
 }
 
 export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
@@ -282,10 +306,14 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
     { data: shiftPeriods, error: shiftPeriodsError },
     { data: groups, error: groupsError },
     { data: teachers, error: teachersError },
+    { data: activeSubjects, error: activeSubjectsError },
     { data: assignments, error: assignmentsError },
     { data: availability, error: availabilityError },
     { data: fixedPeriods, error: fixedPeriodsError },
   ] = await Promise.all([
+    /*
+     * Horas activas de los turnos.
+     */
     supabase
       .from("shift_periods")
       .select(
@@ -306,6 +334,9 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
         ascending: true,
       }),
 
+    /*
+     * Grupos activos del ciclo escolar.
+     */
     supabase
       .from("groups")
       .select(
@@ -322,6 +353,9 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
       .eq("academic_period_id", activeAcademicPeriod.id)
       .eq("active", true),
 
+    /*
+     * Profesores activos.
+     */
     supabase
       .from("teachers")
       .select(
@@ -337,6 +371,29 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
       .eq("school_id", school.id)
       .eq("active", true),
 
+    /*
+     * Únicamente materias activas.
+     *
+     * Toda materia con active = false
+     * queda fuera del generador.
+     */
+    supabase
+      .from("subjects")
+      .select(
+        `
+        id,
+        name,
+        active
+      `,
+      )
+      .eq("school_id", school.id)
+      .eq("active", true),
+
+    /*
+     * Se consultan todas las asignaciones
+     * y después se filtran según el estado
+     * del grupo, profesor y materia.
+     */
     supabase
       .from("teaching_assignments")
       .select(
@@ -355,6 +412,9 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
       .eq("school_id", school.id)
       .eq("academic_period_id", activeAcademicPeriod.id),
 
+    /*
+     * Disponibilidad docente.
+     */
     supabase
       .from("teacher_availability")
       .select(
@@ -369,6 +429,9 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
       .eq("school_id", school.id)
       .eq("academic_period_id", activeAcademicPeriod.id),
 
+    /*
+     * Talleres fijos.
+     */
     supabase
       .from("group_fixed_periods")
       .select(
@@ -396,6 +459,7 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
     shiftPeriodsError,
     groupsError,
     teachersError,
+    activeSubjectsError,
     assignmentsError,
     availabilityError,
     fixedPeriodsError,
@@ -429,6 +493,10 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
     throw new Error("No existen profesores activos.");
   }
 
+  if (!(activeSubjects ?? []).length) {
+    throw new Error("No existen materias activas.");
+  }
+
   if (!(assignments ?? []).length) {
     throw new Error("No existen asignaciones docentes.");
   }
@@ -439,15 +507,44 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
     (teachers ?? []).map((teacher) => teacher.id),
   );
 
+  /*
+   * Conjunto con los IDs de las materias
+   * que actualmente tienen active = true.
+   */
+  const activeSubjectIds = new Set(
+    (activeSubjects ?? []).map((subject) => subject.id),
+  );
+
+  /*
+   * Esta es la corrección principal.
+   *
+   * La asignación solamente se envía a Python
+   * cuando:
+   *
+   * 1. El grupo está activo.
+   * 2. El profesor está activo.
+   * 3. La materia está activa.
+   */
   const usableAssignments = (assignments ?? []).filter(
     (assignment) =>
       activeGroupIds.has(assignment.group_id) &&
-      activeTeacherIds.has(assignment.teacher_id),
+      activeTeacherIds.has(assignment.teacher_id) &&
+      activeSubjectIds.has(assignment.subject_id),
+  );
+
+  /*
+   * Asignaciones ignoradas para diagnóstico.
+   */
+  const ignoredAssignments = (assignments ?? []).filter(
+    (assignment) =>
+      !activeGroupIds.has(assignment.group_id) ||
+      !activeTeacherIds.has(assignment.teacher_id) ||
+      !activeSubjectIds.has(assignment.subject_id),
   );
 
   if (!usableAssignments.length) {
     throw new Error(
-      "Las asignaciones existentes no pertenecen a grupos y profesores activos.",
+      "No existen asignaciones con grupo, profesor y materia activos.",
     );
   }
 
@@ -455,6 +552,10 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
     usableAssignments.map((assignment) => assignment.id),
   );
 
+  /*
+   * Una clase bloqueada no puede conservarse
+   * si pertenece a una materia desactivada.
+   */
   const invalidLockedEntry = lockedEntries.find(
     (entry) =>
       !entry.assignment_id ||
@@ -466,7 +567,7 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
 
   if (invalidLockedEntry) {
     throw new Error(
-      "Una clase bloqueada de la versión base ya no corresponde con la configuración actual.",
+      "Una clase bloqueada de la versión base pertenece a una asignación, materia, grupo o profesor que ya no está activo.",
     );
   }
 
@@ -475,6 +576,66 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
     shiftPeriods: shiftPeriods ?? [],
     fixedPeriods: fixedPeriods ?? [],
   });
+
+  /*
+   * Calculamos la carga que realmente
+   * llegará al solver después de excluir
+   * las materias inactivas.
+   */
+  const groupLoads = calculateGroupLoads({
+    groups: groups ?? [],
+    assignments: usableAssignments,
+  });
+
+  const totalRequiredEntries = usableAssignments.reduce(
+    (total, assignment) => total + Number(assignment.weekly_periods ?? 0),
+    0,
+  );
+
+  console.info("=== PAYLOAD DEL HORARIO ===");
+
+  console.info("Resumen general:", {
+    activeGroups: activeGroupIds.size,
+
+    activeTeachers: activeTeacherIds.size,
+
+    activeSubjects: activeSubjectIds.size,
+
+    totalAssignmentsInDatabase: (assignments ?? []).length,
+
+    assignmentsSentToSolver: usableAssignments.length,
+
+    ignoredAssignments: ignoredAssignments.length,
+
+    totalRequiredHours: totalRequiredEntries,
+
+    fixedWorkshopHours: fixedGroupSlots.length,
+  });
+
+  console.table(groupLoads);
+
+  if (ignoredAssignments.length > 0) {
+    console.info(
+      "Asignaciones ignoradas por tener grupo, profesor o materia inactivos:",
+      ignoredAssignments.map((assignment) => ({
+        assignmentId: assignment.id,
+
+        groupId: assignment.group_id,
+
+        teacherId: assignment.teacher_id,
+
+        subjectId: assignment.subject_id,
+
+        groupActive: activeGroupIds.has(assignment.group_id),
+
+        teacherActive: activeTeacherIds.has(assignment.teacher_id),
+
+        subjectActive: activeSubjectIds.has(assignment.subject_id),
+
+        weeklyPeriods: assignment.weekly_periods,
+      })),
+    );
+  }
 
   const payload = {
     school_id: school.id,
@@ -519,6 +680,10 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
       max_daily_periods: teacher.max_daily_periods,
     })),
 
+    /*
+     * Solamente llegan al solver las
+     * asignaciones cuya materia está activa.
+     */
     assignments: usableAssignments.map((assignment) => ({
       id: assignment.id,
 
@@ -559,24 +724,27 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
 
     options: {
       max_time_seconds: 55,
+
       num_workers: 8,
 
       /*
-       * Todavía buscamos primero cualquier
-       * horario válido. Después activaremos
-       * la optimización de huecos docentes.
+       * Primero se busca cualquier horario
+       * válido respetando las restricciones
+       * obligatorias.
        */
       optimize_preferences: false,
 
       random_seed: 0,
 
       penalize_avoid: 80,
+
       reward_preferred: 40,
+
       reward_required: 100,
 
       penalize_late_period: 4,
 
-      penalize_isolated_teacher_period: 2,
+      penalize_isolated_teacher_period: 0,
 
       reward_consecutive_assignment_periods: 15,
     },
@@ -589,7 +757,17 @@ export async function buildSchedulePayload({ sourceVersionId = null } = {}) {
 
     payload,
 
+    /*
+     * Estas son exactamente las asignaciones
+     * consideradas por el solver.
+     */
     assignments: usableAssignments,
+
+    ignoredAssignments,
+
+    totalRequiredEntries,
+
+    groupLoads,
 
     lockedEntries,
 

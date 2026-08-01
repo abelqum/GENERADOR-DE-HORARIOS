@@ -1,158 +1,141 @@
 import { createClient } from "@/lib/supabase/server";
 
+const INSERT_CHUNK_SIZE = 250;
+
 function buildVersionName(activeAcademicPeriod, createdAt) {
   const formattedDate = new Intl.DateTimeFormat("es-MX", {
     dateStyle: "medium",
     timeStyle: "short",
-
     timeZone: "America/Mexico_City",
   }).format(createdAt);
 
   return `${activeAcademicPeriod.name} · ` + formattedDate;
 }
 
-async function cleanupVersion({ supabase, schoolId, versionId }) {
+function splitIntoChunks(values, chunkSize = INSERT_CHUNK_SIZE) {
+  const chunks = [];
+
+  for (let index = 0; index < values.length; index += chunkSize) {
+    chunks.push(values.slice(index, index + chunkSize));
+  }
+
+  return chunks;
+}
+
+function getSupabaseErrorMessage(error, fallbackMessage) {
+  if (!error) {
+    return fallbackMessage;
+  }
+
+  return [
+    fallbackMessage,
+
+    error.message ? `Error: ${error.message}` : null,
+
+    error.details ? `Detalles: ${error.details}` : null,
+
+    error.hint ? `Sugerencia: ${error.hint}` : null,
+
+    error.code ? `Código: ${error.code}` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+async function insertInChunks({ supabase, table, rows }) {
+  if (!Array.isArray(rows)) {
+    throw new Error(`Las filas de ${table} no son válidas.`);
+  }
+
+  if (rows.length === 0) {
+    return;
+  }
+
+  const chunks = splitIntoChunks(rows);
+
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunk = chunks[index];
+
+    const { error } = await supabase.from(table).insert(chunk);
+
+    if (error) {
+      console.error(
+        `Error insertando bloque ${index + 1} de ${chunks.length} en ${table}:`,
+        {
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+          code: error.code,
+        },
+      );
+
+      throw error;
+    }
+  }
+}
+
+async function cleanupIncompleteVersion({ supabase, schoolId, versionId }) {
   if (!versionId) {
     return;
   }
 
-  const { error } = await supabase
+  /*
+   * Primero eliminamos los talleres
+   * asociados a la versión incompleta.
+   */
+  const { error: fixedEntriesDeleteError } = await supabase
+    .from("schedule_fixed_entries")
+    .delete()
+    .eq("schedule_version_id", versionId)
+    .eq("school_id", schoolId);
+
+  if (fixedEntriesDeleteError) {
+    console.error(
+      "Error eliminando talleres de versión incompleta:",
+      fixedEntriesDeleteError,
+    );
+  }
+
+  /*
+   * Después eliminamos las clases.
+   */
+  const { error: entriesDeleteError } = await supabase
+    .from("schedule_entries")
+    .delete()
+    .eq("schedule_version_id", versionId)
+    .eq("school_id", schoolId);
+
+  if (entriesDeleteError) {
+    console.error(
+      "Error eliminando clases de versión incompleta:",
+      entriesDeleteError,
+    );
+  }
+
+  /*
+   * Finalmente eliminamos la cabecera
+   * de la versión.
+   */
+  const { error: versionDeleteError } = await supabase
     .from("schedule_versions")
     .delete()
     .eq("id", versionId)
     .eq("school_id", schoolId);
 
-  if (error) {
-    console.error("Error limpiando versión incompleta:", error);
+  if (versionDeleteError) {
+    console.error("Error eliminando versión incompleta:", versionDeleteError);
   }
 }
 
-export async function saveScheduleResult({
-  school,
-
-  activeAcademicPeriod,
-
-  solverResult,
-
-  fixedGroupSlots = [],
-
-  userId,
-
-  sourceVersionId = null,
-
-  versionName = null,
-}) {
-  if (!school?.id) {
-    throw new Error("No se identificó la escuela.");
+function validateSolverEntries(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new Error("El solver no devolvió clases para guardar.");
   }
 
-  if (!activeAcademicPeriod?.id) {
-    throw new Error("No se identificó el ciclo escolar.");
-  }
-
-  if (!solverResult || !Array.isArray(solverResult.entries)) {
-    throw new Error("El resultado del solver no contiene clases válidas.");
-  }
-
-  if (solverResult.entries.length === 0) {
-    throw new Error("El solver no devolvió ninguna clase para guardar.");
-  }
-
-  if (!Array.isArray(fixedGroupSlots) || fixedGroupSlots.length === 0) {
-    throw new Error("No se recibieron los talleres fijos de los grupos.");
-  }
-
-  const supabase = await createClient();
-
-  const createdAt = new Date();
-
-  const versionPayload = {
-    school_id: school.id,
-
-    academic_period_id: activeAcademicPeriod.id,
-
-    name: versionName || buildVersionName(activeAcademicPeriod, createdAt),
-
-    status: "draft",
-
-    solver_status: solverResult.status,
-
-    objective_value: solverResult.statistics?.objective_value ?? null,
-
-    solver_statistics: solverResult.statistics ?? {},
-
-    warnings: solverResult.warnings ?? [],
-
-    generated_by: userId,
-
-    source_version_id: sourceVersionId,
-  };
-
-  const { data: scheduleVersion, error: versionError } = await supabase
-    .from("schedule_versions")
-    .insert(versionPayload)
-    .select(
-      `
-      id,
-      name,
-      status,
-      solver_status,
-      created_at
-    `,
-    )
-    .single();
-
-  if (versionError || !scheduleVersion) {
-    console.error("Error creando versión del horario:", versionError);
-
-    throw new Error(
-      [
-        "No fue posible crear la versión del horario.",
-
-        versionError?.message ? `Error: ${versionError.message}` : null,
-
-        versionError?.details ? `Detalles: ${versionError.details}` : null,
-
-        versionError?.hint ? `Sugerencia: ${versionError.hint}` : null,
-
-        versionError?.code ? `Código: ${versionError.code}` : null,
-      ]
-        .filter(Boolean)
-        .join(" "),
-    );
-  }
-
-  const entriesPayload = solverResult.entries.map((entry, index) => ({
-    school_id: school.id,
-
-    academic_period_id: activeAcademicPeriod.id,
-
-    schedule_version_id: scheduleVersion.id,
-
-    teaching_assignment_id: entry.assignment_id,
-
-    group_id: entry.group_id,
-
-    subject_id: entry.subject_id,
-
-    teacher_id: entry.teacher_id,
-
-    occurrence_number: Number.isInteger(entry.occurrence_number)
-      ? entry.occurrence_number
-      : index + 1,
-
-    day_of_week: entry.day_of_week,
-
-    shift_period_id: entry.shift_period_id,
-
-    preference_score: entry.preference_score ?? 0,
-
-    locked: Boolean(entry.locked),
-  }));
-
-  const invalidEntry = entriesPayload.find(
+  const invalidEntry = entries.find(
     (entry) =>
-      !entry.teaching_assignment_id ||
+      !entry ||
+      !entry.assignment_id ||
       !entry.group_id ||
       !entry.subject_id ||
       !entry.teacher_id ||
@@ -161,189 +144,330 @@ export async function saveScheduleResult({
   );
 
   if (invalidEntry) {
-    await cleanupVersion({
-      supabase,
+    console.error("Entrada inválida devuelta por el solver:", invalidEntry);
 
-      schoolId: school.id,
+    throw new Error("El solver devolvió una clase con información incompleta.");
+  }
+}
 
-      versionId: scheduleVersion.id,
-    });
-
-    throw new Error(
-      "El solver devolvió una clase incompleta. La versión no fue guardada.",
-    );
+function validateFixedGroupSlots(fixedGroupSlots) {
+  if (!Array.isArray(fixedGroupSlots) || fixedGroupSlots.length === 0) {
+    throw new Error("No se recibieron los talleres fijos de los grupos.");
   }
 
-  const { error: entriesError } = await supabase
-    .from("schedule_entries")
-    .insert(entriesPayload);
-
-  if (entriesError) {
-    console.error("Error guardando clases del horario:", entriesError);
-
-    await cleanupVersion({
-      supabase,
-
-      schoolId: school.id,
-
-      versionId: scheduleVersion.id,
-    });
-
-    throw new Error(
-      entriesError.message
-        ? "No fue posible guardar las clases generadas. " + entriesError.message
-        : "No fue posible guardar las clases generadas.",
-    );
-  }
-
-  const fixedEntriesPayload = fixedGroupSlots.map((fixedSlot) => ({
-    school_id: school.id,
-
-    academic_period_id: activeAcademicPeriod.id,
-
-    schedule_version_id: scheduleVersion.id,
-
-    source_fixed_period_id: fixedSlot.id,
-
-    block_id: fixedSlot.block_id,
-
-    group_id: fixedSlot.group_id,
-
-    day_of_week: fixedSlot.day_of_week,
-
-    shift_period_id: fixedSlot.shift_period_id,
-
-    slot_order: fixedSlot.slot_order,
-
-    activity_type: fixedSlot.activity_type || "workshop",
-
-    label: fixedSlot.label || "Taller",
-
-    color: fixedSlot.color || "#f59e0b",
-
-    locked: true,
-  }));
-
-  const invalidFixedEntry = fixedEntriesPayload.find(
-    (entry) =>
-      !entry.source_fixed_period_id ||
-      !entry.block_id ||
-      !entry.group_id ||
-      !entry.shift_period_id ||
-      !Number.isInteger(entry.day_of_week) ||
-      !Number.isInteger(entry.slot_order),
+  const invalidSlot = fixedGroupSlots.find(
+    (fixedSlot) =>
+      !fixedSlot ||
+      !fixedSlot.id ||
+      !fixedSlot.block_id ||
+      !fixedSlot.group_id ||
+      !fixedSlot.shift_period_id ||
+      !Number.isInteger(fixedSlot.day_of_week) ||
+      !Number.isInteger(fixedSlot.slot_order),
   );
 
-  if (invalidFixedEntry) {
-    await cleanupVersion({
-      supabase,
-
-      schoolId: school.id,
-
-      versionId: scheduleVersion.id,
-    });
+  if (invalidSlot) {
+    console.error("Taller fijo inválido:", invalidSlot);
 
     throw new Error(
-      "Uno de los talleres fijos está incompleto. La versión fue descartada.",
+      "Uno de los talleres fijos contiene información incompleta.",
     );
   }
+}
 
-  const { error: fixedEntriesError } = await supabase
-    .from("schedule_fixed_entries")
-    .insert(fixedEntriesPayload);
-
-  if (fixedEntriesError) {
-    console.error("Error guardando talleres fijos:", fixedEntriesError);
-
-    await cleanupVersion({
-      supabase,
-
-      schoolId: school.id,
-
-      versionId: scheduleVersion.id,
-    });
-
-    throw new Error(
-      fixedEntriesError.message
-        ? "El horario fue calculado, pero no fue posible guardar los talleres fijos. " +
-            fixedEntriesError.message
-        : "No fue posible guardar los talleres fijos.",
-    );
+export async function saveScheduleResult({
+  school,
+  activeAcademicPeriod,
+  solverResult,
+  fixedGroupSlots = [],
+  sourceVersionId = null,
+  versionName = null,
+}) {
+  if (!school?.id) {
+    throw new Error("No se identificó la escuela.");
   }
 
-  const [
-    { count: storedEntriesCount, error: countError },
-    { count: storedFixedEntriesCount, error: fixedCountError },
-  ] = await Promise.all([
-    supabase
-      .from("schedule_entries")
-      .select("*", {
-        count: "exact",
-        head: true,
+  if (!activeAcademicPeriod?.id) {
+    throw new Error("No se identificó el ciclo escolar activo.");
+  }
+
+  if (!solverResult || typeof solverResult !== "object") {
+    throw new Error("No se recibió un resultado válido del solver.");
+  }
+
+  if (!["optimal", "feasible"].includes(solverResult.status)) {
+    throw new Error("El resultado del solver no representa un horario válido.");
+  }
+
+  validateSolverEntries(solverResult.entries);
+
+  validateFixedGroupSlots(fixedGroupSlots);
+
+  const supabase = await createClient();
+
+  const createdAt = new Date();
+
+  let scheduleVersionId = null;
+
+  try {
+    /*
+     * 1. Crear la cabecera de la versión.
+     */
+    const { data: scheduleVersion, error: versionError } = await supabase
+      .from("schedule_versions")
+      .insert({
+        school_id: school.id,
+
+        academic_period_id: activeAcademicPeriod.id,
+
+        source_version_id: sourceVersionId || null,
+
+        name: versionName || buildVersionName(activeAcademicPeriod, createdAt),
+
+        status: "draft",
+
+        solver_status: solverResult.status,
+
+        objective_value: Number.isFinite(
+          solverResult.statistics?.objective_value,
+        )
+          ? solverResult.statistics.objective_value
+          : null,
+
+        solver_statistics: solverResult.statistics ?? {},
+
+        warnings: Array.isArray(solverResult.warnings)
+          ? solverResult.warnings
+          : [],
       })
-      .eq("school_id", school.id)
-      .eq("schedule_version_id", scheduleVersion.id),
+      .select(
+        `
+        id,
+        name,
+        status,
+        solver_status,
+        created_at
+      `,
+      )
+      .single();
 
-    supabase
-      .from("schedule_fixed_entries")
-      .select("*", {
-        count: "exact",
-        head: true,
-      })
-      .eq("school_id", school.id)
-      .eq("schedule_version_id", scheduleVersion.id),
-  ]);
+    if (versionError || !scheduleVersion) {
+      console.error("Error creando versión del horario:", versionError);
 
-  if (countError || fixedCountError) {
-    console.error(
-      "Error verificando horario guardado:",
-      countError || fixedCountError,
-    );
+      throw new Error(
+        getSupabaseErrorMessage(
+          versionError,
+          "No fue posible crear la versión del horario.",
+        ),
+      );
+    }
 
-    await cleanupVersion({
-      supabase,
+    scheduleVersionId = scheduleVersion.id;
 
-      schoolId: school.id,
+    /*
+     * 2. Preparar las clases normales.
+     *
+     * IMPORTANTE:
+     *
+     * La tabla schedule_entries de tu
+     * proyecto NO tiene:
+     *
+     * - academic_period_id
+     * - preference_score
+     *
+     * Por eso no se envían.
+     */
+    const entriesPayload = solverResult.entries.map((entry, index) => ({
+      school_id: school.id,
 
+      schedule_version_id: scheduleVersion.id,
+
+      teaching_assignment_id: entry.assignment_id,
+
+      group_id: entry.group_id,
+
+      subject_id: entry.subject_id,
+
+      teacher_id: entry.teacher_id,
+
+      day_of_week: entry.day_of_week,
+
+      shift_period_id: entry.shift_period_id,
+
+      occurrence_number: Number.isInteger(entry.occurrence_number)
+        ? entry.occurrence_number
+        : index + 1,
+
+      locked: Boolean(entry.locked),
+    }));
+
+    console.info("Guardando clases normales:", {
       versionId: scheduleVersion.id,
+      total: entriesPayload.length,
+      sample: entriesPayload[0],
     });
 
-    throw new Error("No fue posible verificar el horario guardado.");
-  }
+    try {
+      await insertInChunks({
+        supabase,
+        table: "schedule_entries",
+        rows: entriesPayload,
+      });
+    } catch (entriesError) {
+      throw new Error(
+        getSupabaseErrorMessage(
+          entriesError,
+          "No fue posible guardar las clases generadas.",
+        ),
+      );
+    }
 
-  if (storedEntriesCount !== entriesPayload.length) {
-    await cleanupVersion({
-      supabase,
+    /*
+     * 3. Preparar los talleres fijos.
+     */
+    const fixedEntriesPayload = fixedGroupSlots.map((fixedSlot) => ({
+      school_id: school.id,
 
-      schoolId: school.id,
+      academic_period_id: activeAcademicPeriod.id,
 
+      schedule_version_id: scheduleVersion.id,
+
+      source_fixed_period_id: fixedSlot.id,
+
+      block_id: fixedSlot.block_id,
+
+      group_id: fixedSlot.group_id,
+
+      day_of_week: fixedSlot.day_of_week,
+
+      shift_period_id: fixedSlot.shift_period_id,
+
+      slot_order: fixedSlot.slot_order,
+
+      activity_type: fixedSlot.activity_type || "workshop",
+
+      label: fixedSlot.label || "Taller",
+
+      color: fixedSlot.color || "#f59e0b",
+
+      locked: true,
+    }));
+
+    console.info("Guardando talleres fijos:", {
       versionId: scheduleVersion.id,
+      total: fixedEntriesPayload.length,
+      sample: fixedEntriesPayload[0],
     });
 
-    throw new Error(
-      `Se esperaban ${entriesPayload.length} clases, pero solamente se guardaron ${storedEntriesCount ?? 0}.`,
-    );
-  }
+    try {
+      await insertInChunks({
+        supabase,
+        table: "schedule_fixed_entries",
+        rows: fixedEntriesPayload,
+      });
+    } catch (fixedEntriesError) {
+      throw new Error(
+        getSupabaseErrorMessage(
+          fixedEntriesError,
+          "El horario fue calculado, pero no fue posible guardar los talleres fijos.",
+        ),
+      );
+    }
 
-  if (storedFixedEntriesCount !== fixedEntriesPayload.length) {
-    await cleanupVersion({
-      supabase,
+    /*
+     * 4. Verificar cuántas clases
+     * se guardaron realmente.
+     */
+    const { count: storedEntriesCount, error: entriesCountError } =
+      await supabase
+        .from("schedule_entries")
+        .select("id", {
+          count: "exact",
+          head: true,
+        })
+        .eq("school_id", school.id)
+        .eq("schedule_version_id", scheduleVersion.id);
 
-      schoolId: school.id,
+    if (entriesCountError) {
+      console.error("Error verificando clases guardadas:", entriesCountError);
 
-      versionId: scheduleVersion.id,
+      throw new Error(
+        getSupabaseErrorMessage(
+          entriesCountError,
+          "No fue posible verificar las clases guardadas.",
+        ),
+      );
+    }
+
+    if (storedEntriesCount !== entriesPayload.length) {
+      throw new Error(
+        `Se esperaban ${entriesPayload.length} clases, pero se guardaron ${
+          storedEntriesCount ?? 0
+        }.`,
+      );
+    }
+
+    /*
+     * 5. Verificar los talleres guardados.
+     */
+    const { count: storedFixedEntriesCount, error: fixedEntriesCountError } =
+      await supabase
+        .from("schedule_fixed_entries")
+        .select("id", {
+          count: "exact",
+          head: true,
+        })
+        .eq("school_id", school.id)
+        .eq("schedule_version_id", scheduleVersion.id);
+
+    if (fixedEntriesCountError) {
+      console.error(
+        "Error verificando talleres guardados:",
+        fixedEntriesCountError,
+      );
+
+      throw new Error(
+        getSupabaseErrorMessage(
+          fixedEntriesCountError,
+          "No fue posible verificar los talleres guardados.",
+        ),
+      );
+    }
+
+    if (storedFixedEntriesCount !== fixedEntriesPayload.length) {
+      throw new Error(
+        `Se esperaban ${
+          fixedEntriesPayload.length
+        } horas de taller, pero se guardaron ${storedFixedEntriesCount ?? 0}.`,
+      );
+    }
+
+    console.info("Horario guardado correctamente:", {
+      scheduleVersionId: scheduleVersion.id,
+
+      solverStatus: solverResult.status,
+
+      storedEntries: storedEntriesCount,
+
+      storedFixedEntries: storedFixedEntriesCount,
     });
 
-    throw new Error(
-      `Se esperaban ${fixedEntriesPayload.length} horas de taller, pero solamente se guardaron ${storedFixedEntriesCount ?? 0}.`,
-    );
+    return {
+      ...scheduleVersion,
+
+      entriesCount: storedEntriesCount,
+
+      fixedEntriesCount: storedFixedEntriesCount,
+    };
+  } catch (error) {
+    console.error("Error guardando horario:", error);
+
+    await cleanupIncompleteVersion({
+      supabase,
+      schoolId: school.id,
+      versionId: scheduleVersionId,
+    });
+
+    throw error;
   }
-
-  return {
-    ...scheduleVersion,
-
-    entriesCount: storedEntriesCount,
-
-    fixedEntriesCount: storedFixedEntriesCount,
-  };
 }

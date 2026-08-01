@@ -256,8 +256,13 @@ export async function createSchoolAction(_previousState, formData) {
 /**
  * Edita los datos de la escuela existente.
  */
+/**
+ * Edita los datos de la escuela existente.
+ */
 export async function updateSchoolAction(formData) {
   const name = getValue(formData, "name");
+
+  const directorName = getValue(formData, "director_name");
 
   const code = getValue(formData, "code");
 
@@ -276,6 +281,14 @@ export async function updateSchoolAction(formData) {
     return validationError;
   }
 
+  if (!directorName || directorName.length < 3) {
+    return {
+      success: false,
+
+      message: "Escribe el nombre completo de la directora.",
+    };
+  }
+
   const { school } = await getCurrentSchool();
 
   let adminClient;
@@ -287,6 +300,7 @@ export async function updateSchoolAction(formData) {
 
     return {
       success: false,
+
       message:
         "No está configurada correctamente la clave secreta de Supabase.",
     };
@@ -296,13 +310,24 @@ export async function updateSchoolAction(formData) {
     .from("schools")
     .update({
       name,
+
+      director_name: directorName,
+
       code: code || null,
+
       email: email || null,
+
       phone: phone || null,
+
       address: address || null,
     })
     .eq("id", school.id)
-    .select("id")
+    .select(
+      `
+      id,
+      director_name
+    `,
+    )
     .maybeSingle();
 
   if (error) {
@@ -311,12 +336,14 @@ export async function updateSchoolAction(formData) {
     if (error.code === "23505") {
       return {
         success: false,
+
         message: "Ya existe otra escuela con esa clave o código.",
       };
     }
 
     return {
       success: false,
+
       message: getDatabaseErrorMessage(
         error,
         "No fue posible actualizar la escuela.",
@@ -327,6 +354,7 @@ export async function updateSchoolAction(formData) {
   if (!updatedSchool) {
     return {
       success: false,
+
       message: "La escuela no fue encontrada o no pudo actualizarse.",
     };
   }
@@ -335,6 +363,7 @@ export async function updateSchoolAction(formData) {
 
   return {
     success: true,
+
     message: "Información de la escuela actualizada correctamente.",
   };
 }

@@ -72,8 +72,10 @@ function getExpectedEntries(payload) {
 function createFailureState({
   message,
   solverStatus = null,
+  solutionMode = null,
   errorCode,
   diagnostics = [],
+  warnings = [],
   relaxedEntriesCount = 0,
   relaxedRequiredEntries = 0,
 }) {
@@ -82,8 +84,10 @@ function createFailureState({
     message,
     versionId: null,
     solverStatus,
+    solutionMode,
     errorCode,
     diagnostics,
+    warnings,
     relaxedEntriesCount,
     relaxedRequiredEntries,
   };
@@ -150,11 +154,16 @@ export async function generateScheduleAction(_previousState, _formData) {
 
     const solverResult = await solveSchedule(payload, {
       /*
-       * El diagnóstico ejecuta un segundo
-       * modelo cuando el horario estricto
-       * resulta inviable.
+       * El solver puede ejecutar:
+       *
+       * 1. Modelo estricto.
+       * 2. Modo práctico.
+       * 3. Diagnóstico final.
+       *
+       * Este tiempo solamente corresponde
+       * al cliente de Next.js.
        */
-      timeoutMs: 90_000,
+      timeoutMs: 160_000,
     });
 
     if (!solverResult || typeof solverResult !== "object") {
@@ -167,6 +176,10 @@ export async function generateScheduleAction(_previousState, _formData) {
 
     const diagnostics = normalizeDiagnostics(solverResult.diagnostics);
 
+    const warnings = Array.isArray(solverResult.warnings)
+      ? solverResult.warnings.filter((warning) => typeof warning === "string")
+      : [];
+
     const relaxedEntriesCount = Array.isArray(solverResult.relaxed_entries)
       ? solverResult.relaxed_entries.length
       : 0;
@@ -174,7 +187,7 @@ export async function generateScheduleAction(_previousState, _formData) {
     if (!["optimal", "feasible"].includes(solverResult.status)) {
       const statusMessages = {
         infeasible:
-          "No existe una combinación que cumpla todas las restricciones actuales.",
+          "No existe una combinación completa dentro de la disponibilidad actual de los docentes.",
 
         unknown:
           "El solver no pudo determinar una solución dentro del tiempo disponible.",
@@ -195,9 +208,12 @@ export async function generateScheduleAction(_previousState, _formData) {
 
         solverStatus: solverResult.status ?? null,
 
+        solutionMode: solverResult.solution_mode ?? null,
+
         errorCode: "SOLVER_NO_SOLUTION",
 
         diagnostics,
+        warnings,
 
         relaxedEntriesCount,
 
@@ -212,7 +228,12 @@ export async function generateScheduleAction(_previousState, _formData) {
 
         solverStatus: solverResult.status,
 
+        solutionMode: solverResult.solution_mode ?? null,
+
         errorCode: "MISSING_ENTRIES",
+
+        diagnostics,
+        warnings,
       });
     }
 
@@ -226,9 +247,12 @@ export async function generateScheduleAction(_previousState, _formData) {
 
         solverStatus: solverResult.status,
 
+        solutionMode: solverResult.solution_mode ?? null,
+
         errorCode: "INCOMPLETE_SOLUTION",
 
         diagnostics,
+        warnings,
       });
     }
 
@@ -241,25 +265,34 @@ export async function generateScheduleAction(_previousState, _formData) {
     });
 
     revalidatePath("/generador");
+
     revalidatePath("/horarios");
 
     revalidatePath(`/horarios/${scheduleVersion.id}`);
+
+    const solutionMode = solverResult.solution_mode ?? "strict";
 
     return {
       success: true,
 
       message:
-        solverResult.status === "optimal"
-          ? "Se generó y guardó un horario óptimo respetando los talleres fijos."
-          : "Se generó y guardó un horario válido respetando los talleres fijos.",
+        solverResult.message ||
+        (solutionMode === "practical"
+          ? "Se generó un horario práctico dentro de la disponibilidad de los docentes."
+          : solverResult.status === "optimal"
+            ? "Se generó y guardó un horario óptimo respetando los talleres fijos."
+            : "Se generó y guardó un horario válido respetando los talleres fijos."),
 
       versionId: scheduleVersion.id,
 
       solverStatus: solverResult.status,
 
+      solutionMode,
+
       errorCode: null,
 
-      diagnostics: [],
+      diagnostics,
+      warnings,
 
       relaxedEntriesCount: 0,
 

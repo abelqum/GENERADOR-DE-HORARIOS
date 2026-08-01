@@ -25,14 +25,14 @@ function cleanFileName(value) {
 
 function getTeacherName(teacher) {
   if (!teacher) {
-    return "Sin profesor";
+    return "";
   }
 
   const name = [teacher.first_name, teacher.last_name]
     .filter(Boolean)
     .join(" ");
 
-  return name || "Sin profesor";
+  return name || "";
 }
 
 function getGroupShiftId(group) {
@@ -45,6 +45,29 @@ function getEntryGroupId(entry) {
 
 function getSubjectName(entry) {
   return entry.subject?.name || "Materia sin nombre";
+}
+
+function isWorkshopEntry(entry) {
+  return (
+    entry?.activity_type === "workshop" ||
+    entry?.is_fixed_activity === true ||
+    String(entry?.subject?.name || "")
+      .trim()
+      .toLowerCase() === "taller"
+  );
+}
+
+function isServiceEntry(entry) {
+  return (
+    entry?.activity_type === "service" ||
+    entry?.is_teacher_slot_label === true ||
+    String(entry?.label || "")
+      .trim()
+      .toLowerCase() === "servicio" ||
+    String(entry?.subject?.name || "")
+      .trim()
+      .toLowerCase() === "servicio"
+  );
 }
 
 function sortGroups(firstGroup, secondGroup) {
@@ -113,6 +136,14 @@ function createIndividualCellText({ entry, view }) {
     return "Libre";
   }
 
+  if (isServiceEntry(entry)) {
+    return "Servicio";
+  }
+
+  if (isWorkshopEntry(entry)) {
+    return "Taller";
+  }
+
   const subjectName = getSubjectName(entry);
 
   if (view === "teacher") {
@@ -123,7 +154,7 @@ function createIndividualCellText({ entry, view }) {
 
   const teacherName = getTeacherName(entry.teacher);
 
-  return [subjectName, teacherName].join("\n");
+  return [subjectName, teacherName].filter(Boolean).join("\n");
 }
 
 function createGeneralCellText({ groups, day, period, entriesMap }) {
@@ -137,26 +168,48 @@ function createGeneralCellText({ groups, day, period, entriesMap }) {
         return `${group.name} · Libre`;
       }
 
+      if (isWorkshopEntry(entry)) {
+        return `${group.name} · ` + "Taller";
+      }
+
       const subjectName = getSubjectName(entry);
 
       const teacherName = getTeacherName(entry.teacher);
 
-      /*
-       * Una sola línea por grupo
-       * para que entren más grupos
-       * dentro del PDF.
-       */
-      return [group.name, subjectName, teacherName].join(" · ");
+      return [group.name, subjectName, teacherName].filter(Boolean).join(" · ");
     })
     .join("\n");
 }
 
-function createIndividualTableBody({ shift, entriesMap, view }) {
-  return shift.periods.map((period) => {
-    const timeLabel = [
-      period.name,
-      `${formatTime(period.start_time)}–${formatTime(period.end_time)}`,
-    ].join("\n");
+function flattenIndividualPeriods(shifts) {
+  const showShiftName = shifts.length > 1;
+
+  return shifts.flatMap((shift) =>
+    shift.periods.map((period) => ({
+      ...period,
+
+      pdfShiftName: showShiftName ? shift.name : null,
+    })),
+  );
+}
+
+function createTimeLabel(period) {
+  const parts = [];
+
+  if (period.pdfShiftName) {
+    parts.push(`Turno ${period.pdfShiftName}`);
+  }
+
+  parts.push(period.name);
+
+  parts.push(`${formatTime(period.start_time)}–${formatTime(period.end_time)}`);
+
+  return parts.filter(Boolean).join("\n");
+}
+
+function createIndividualTableBody({ periods, entriesMap, view }) {
+  return periods.map((period) => {
+    const timeLabel = createTimeLabel(period);
 
     if (period.period_type !== "class") {
       return [
@@ -189,6 +242,7 @@ function createGeneralTableBody({ shift, groups, entriesMap }) {
   return shift.periods.map((period) => {
     const timeLabel = [
       period.name,
+
       `${formatTime(period.start_time)}–${formatTime(period.end_time)}`,
     ].join("\n");
 
@@ -217,27 +271,12 @@ function createGeneralTableBody({ shift, groups, entriesMap }) {
   });
 }
 
-function getPageTitle({ view, selectedEntity, shift }) {
-  if (view === "general") {
-    return `Vista general · Turno ${shift.name}`;
-  }
-
-  if (view === "teacher") {
-    return `Horario del profesor: ${selectedEntity?.name || "Sin nombre"}`;
-  }
-
-  return `Horario del grupo: ${selectedEntity?.name || "Sin nombre"}`;
-}
-
-function addDocumentHeader({
+function addIndividualHeader({
   doc,
   schoolName,
   academicPeriodName,
-  versionName,
   view,
   selectedEntity,
-  shift,
-  generatedAt,
 }) {
   const pageWidth = doc.internal.pageSize.getWidth();
 
@@ -245,50 +284,80 @@ function addDocumentHeader({
 
   doc.setFont("helvetica", "bold");
 
-  doc.setFontSize(view === "general" ? 18 : 17);
+  doc.setFontSize(15);
 
-  doc.text(schoolName || "Horario escolar", pageWidth / 2, 14, {
+  doc.text(`Escuela: ${schoolName || "Sin nombre"}`, pageWidth / 2, 11, {
     align: "center",
   });
-
-  doc.setFontSize(view === "general" ? 13 : 12);
-
-  doc.text(
-    getPageTitle({
-      view,
-      selectedEntity,
-      shift,
-    }),
-    pageWidth / 2,
-    22,
-    {
-      align: "center",
-    },
-  );
 
   doc.setFont("helvetica", "normal");
 
   doc.setFontSize(9);
 
-  const information = [
-    academicPeriodName ? `Ciclo escolar: ${academicPeriodName}` : null,
-
-    versionName ? `Versión: ${versionName}` : null,
-
-    view !== "general"
-      ? selectedEntity?.secondaryText || null
-      : `Grupos incluidos: ${shift.groupCount ?? 0}`,
-
-    `Exportado: ${generatedAt}`,
-  ].filter(Boolean);
-
-  information.forEach((line, index) => {
-    doc.text(line, pageWidth / 2, 29 + index * 5, {
+  doc.text(
+    `Ciclo escolar: ${academicPeriodName || "Sin especificar"}`,
+    pageWidth / 2,
+    17,
+    {
       align: "center",
-    });
+    },
+  );
+
+  doc.setFont("helvetica", "bold");
+
+  doc.setFontSize(11);
+
+  doc.text(
+    `${view === "teacher" ? "Profesor(a)" : "Grupo"}: ${
+      selectedEntity?.name || "Sin nombre"
+    }`,
+    pageWidth / 2,
+    24,
+    {
+      align: "center",
+    },
+  );
+
+  return 28;
+}
+
+function addGeneralHeader({ doc, schoolName, academicPeriodName, shift }) {
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  doc.setTextColor(15, 23, 42);
+
+  doc.setFont("helvetica", "bold");
+
+  doc.setFontSize(18);
+
+  doc.text(schoolName || "Horario escolar", pageWidth / 2, 14, {
+    align: "center",
   });
 
-  return 34 + information.length * 5;
+  doc.setFontSize(13);
+
+  doc.text(`Vista general · Turno ${shift.name}`, pageWidth / 2, 22, {
+    align: "center",
+  });
+
+  doc.setFont("helvetica", "normal");
+
+  doc.setFontSize(9);
+
+  doc.text(
+    `Ciclo escolar: ${academicPeriodName || "Sin especificar"}`,
+    pageWidth / 2,
+    29,
+    {
+      align: "center",
+    },
+  );
+
+  doc.text(`Grupos incluidos: ${shift.groupCount ?? 0}`, pageWidth / 2, 34, {
+    align: "center",
+  });
+
+  return 39;
 }
 
 function addFooter(doc) {
@@ -320,12 +389,90 @@ function addFooter(doc) {
   }
 }
 
-function applyCellStyles({ data, shift, view }) {
+function addTeacherSignatures({ doc, directorName, teacherName }) {
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  const pageHeight = doc.internal.pageSize.getHeight();
+
+  const leftCenter = pageWidth * 0.25;
+
+  const rightCenter = pageWidth * 0.75;
+
+  const lineHalfWidth = 48;
+
+  const lineY = pageHeight - 21;
+
+  const textY = lineY + 5.5;
+
+  doc.setDrawColor(51, 65, 85);
+
+  doc.setLineWidth(0.35);
+
+  /*
+   * Firma de la directora.
+   */
+  doc.line(
+    leftCenter - lineHalfWidth,
+    lineY,
+    leftCenter + lineHalfWidth,
+    lineY,
+  );
+
+  /*
+   * Firma de recibido del profesor.
+   */
+  doc.line(
+    rightCenter - lineHalfWidth,
+    lineY,
+    rightCenter + lineHalfWidth,
+    lineY,
+  );
+
+  doc.setTextColor(15, 23, 42);
+
+  doc.setFont("helvetica", "normal");
+
+  doc.setFontSize(8.5);
+
+  const directorText = doc.splitTextToSize(
+    `Directora: ${directorName || "Sin nombre"}`,
+    96,
+  );
+
+  const receivedText = doc.splitTextToSize(
+    `Recibo horario: ${teacherName || "Sin nombre"}`,
+    96,
+  );
+
+  doc.text(directorText, leftCenter, textY, {
+    align: "center",
+  });
+
+  doc.text(receivedText, rightCenter, textY, {
+    align: "center",
+  });
+}
+
+function cellContainsWorkshop(rawValue) {
+  return String(rawValue || "")
+    .toLowerCase()
+    .includes("taller");
+}
+
+function cellContainsService(rawValue) {
+  return (
+    String(rawValue || "")
+      .trim()
+      .toLowerCase() === "servicio"
+  );
+}
+
+function applyCellStyles({ data, periods, view }) {
   if (data.section !== "body") {
     return;
   }
 
-  const period = shift.periods[data.row.index];
+  const period = periods[data.row.index];
 
   if (period?.period_type === "recess") {
     data.cell.styles.fillColor = [254, 243, 199];
@@ -355,6 +502,34 @@ function applyCellStyles({ data, shift, view }) {
     return;
   }
 
+  if (data.column.index > 0 && cellContainsWorkshop(data.cell.raw)) {
+    data.cell.styles.fillColor = [255, 247, 237];
+
+    data.cell.styles.textColor = [154, 52, 18];
+
+    data.cell.styles.fontStyle = "bold";
+
+    data.cell.styles.halign = "center";
+
+    data.cell.styles.valign = "middle";
+
+    return;
+  }
+
+  if (data.column.index > 0 && cellContainsService(data.cell.raw)) {
+    data.cell.styles.fillColor = [239, 246, 255];
+
+    data.cell.styles.textColor = [29, 78, 216];
+
+    data.cell.styles.fontStyle = "bold";
+
+    data.cell.styles.halign = "center";
+
+    data.cell.styles.valign = "middle";
+
+    return;
+  }
+
   if (
     view !== "general" &&
     data.column.index > 0 &&
@@ -363,6 +538,355 @@ function applyCellStyles({ data, shift, view }) {
     data.cell.styles.textColor = [148, 163, 184];
 
     data.cell.styles.fontStyle = "italic";
+  }
+}
+
+function getIndividualTableSizing({
+  doc,
+  startY,
+  rowCount,
+  reservedBottomSpace = 8,
+}) {
+  const pageHeight = doc.internal.pageSize.getHeight();
+
+  const availableHeight = pageHeight - startY - reservedBottomSpace;
+
+  const estimatedHeadHeight = 8;
+
+  const usableRowsHeight = Math.max(58, availableHeight - estimatedHeadHeight);
+
+  const calculatedRowHeight = usableRowsHeight / Math.max(rowCount, 1);
+
+  const rowHeight = Math.max(6, Math.min(13, calculatedRowHeight));
+
+  if (rowCount <= 9) {
+    return {
+      fontSize: 7,
+
+      headFontSize: 8,
+
+      cellPadding: 1.5,
+
+      minCellHeight: Math.min(12.5, rowHeight),
+
+      timeColumnWidth: 31,
+    };
+  }
+
+  if (rowCount <= 14) {
+    return {
+      fontSize: 6.1,
+
+      headFontSize: 7.2,
+
+      cellPadding: 1,
+
+      minCellHeight: rowHeight,
+
+      timeColumnWidth: 30,
+    };
+  }
+
+  return {
+    fontSize: 5.2,
+
+    headFontSize: 6.5,
+
+    cellPadding: 0.6,
+
+    minCellHeight: rowHeight,
+
+    timeColumnWidth: 29,
+  };
+}
+
+function renderIndividualSchedule({
+  doc,
+  schoolName,
+  academicPeriodName,
+  view,
+  selectedEntity,
+  shifts,
+  entriesMap,
+  directorName,
+}) {
+  const periods = flattenIndividualPeriods(shifts);
+
+  if (periods.length === 0) {
+    throw new Error("No existen horas configuradas para este horario.");
+  }
+
+  const startY = addIndividualHeader({
+    doc,
+    schoolName,
+    academicPeriodName,
+    view,
+    selectedEntity,
+  });
+
+  /*
+   * En profesores se reservan 38 mm
+   * para las firmas.
+   */
+  const reservedBottomSpace = view === "teacher" ? 38 : 8;
+
+  const sizing = getIndividualTableSizing({
+    doc,
+    startY,
+    rowCount: periods.length,
+    reservedBottomSpace,
+  });
+
+  const tableBody = createIndividualTableBody({
+    periods,
+    entriesMap,
+    view,
+  });
+
+  autoTable(doc, {
+    startY,
+
+    head: [["Hora", ...SCHOOL_DAYS.map((day) => day.name)]],
+
+    body: tableBody,
+
+    theme: "grid",
+
+    styles: {
+      font: "helvetica",
+
+      fontSize: sizing.fontSize,
+
+      cellPadding: sizing.cellPadding,
+
+      valign: "middle",
+
+      halign: "center",
+
+      overflow: "linebreak",
+
+      lineColor: [203, 213, 225],
+
+      lineWidth: 0.2,
+
+      minCellHeight: sizing.minCellHeight,
+
+      cellWidth: "wrap",
+    },
+
+    headStyles: {
+      fillColor: [15, 23, 42],
+
+      textColor: [255, 255, 255],
+
+      fontStyle: "bold",
+
+      fontSize: sizing.headFontSize,
+
+      halign: "center",
+
+      valign: "middle",
+
+      cellPadding: 1.2,
+    },
+
+    columnStyles: {
+      0: {
+        cellWidth: sizing.timeColumnWidth,
+
+        fontStyle: "bold",
+
+        fillColor: [248, 250, 252],
+
+        halign: "center",
+
+        valign: "middle",
+      },
+    },
+
+    didParseCell(data) {
+      applyCellStyles({
+        data,
+        periods,
+        view,
+      });
+    },
+
+    margin: {
+      top: 6,
+
+      right: 7,
+
+      bottom: view === "teacher" ? 36 : 6,
+
+      left: 7,
+    },
+
+    pageBreak: "avoid",
+
+    rowPageBreak: "avoid",
+
+    showHead: "firstPage",
+  });
+
+  if (doc.getNumberOfPages() > 1) {
+    throw new Error(
+      "El horario contiene demasiadas filas para caber legiblemente en una sola hoja A4.",
+    );
+  }
+
+  if (view === "teacher") {
+    const pageHeight = doc.internal.pageSize.getHeight();
+
+    const signatureLineY = pageHeight - 21;
+
+    const tableFinalY = doc.lastAutoTable?.finalY ?? startY;
+
+    if (tableFinalY > signatureLineY - 6) {
+      throw new Error(
+        "El horario no deja espacio suficiente para colocar las firmas en la misma página.",
+      );
+    }
+
+    addTeacherSignatures({
+      doc,
+
+      directorName,
+
+      teacherName: selectedEntity?.name || "",
+    });
+  }
+}
+
+function renderGeneralSchedule({
+  doc,
+  schoolName,
+  academicPeriodName,
+  shifts,
+  groups,
+  entriesMap,
+}) {
+  let addedShiftCount = 0;
+
+  for (const shift of shifts) {
+    const shiftGroups = [
+      ...groups.filter((group) => getGroupShiftId(group) === shift.id),
+    ].sort(sortGroups);
+
+    if (shiftGroups.length === 0) {
+      continue;
+    }
+
+    if (addedShiftCount > 0) {
+      doc.addPage();
+    }
+
+    addedShiftCount += 1;
+
+    const shiftWithCount = {
+      ...shift,
+
+      groupCount: shiftGroups.length,
+    };
+
+    const cursorY = addGeneralHeader({
+      doc,
+      schoolName,
+      academicPeriodName,
+      shift: shiftWithCount,
+    });
+
+    const tableBody = createGeneralTableBody({
+      shift,
+      groups: shiftGroups,
+      entriesMap,
+    });
+
+    autoTable(doc, {
+      startY: cursorY,
+
+      head: [["Hora", ...SCHOOL_DAYS.map((day) => day.name)]],
+
+      body: tableBody,
+
+      theme: "grid",
+
+      styles: {
+        font: "helvetica",
+
+        fontSize: 5.2,
+
+        cellPadding: 1.5,
+
+        valign: "top",
+
+        halign: "left",
+
+        overflow: "linebreak",
+
+        lineColor: [203, 213, 225],
+
+        lineWidth: 0.2,
+
+        minCellHeight: 20,
+      },
+
+      headStyles: {
+        fillColor: [15, 23, 42],
+
+        textColor: [255, 255, 255],
+
+        fontStyle: "bold",
+
+        fontSize: 7,
+
+        halign: "center",
+
+        valign: "middle",
+      },
+
+      columnStyles: {
+        0: {
+          cellWidth: 29,
+
+          fontStyle: "bold",
+
+          fillColor: [248, 250, 252],
+
+          halign: "center",
+
+          valign: "middle",
+        },
+      },
+
+      didParseCell(data) {
+        applyCellStyles({
+          data,
+
+          periods: shift.periods,
+
+          view: "general",
+        });
+      },
+
+      margin: {
+        top: 12,
+
+        right: 10,
+
+        bottom: 15,
+
+        left: 10,
+      },
+
+      pageBreak: "auto",
+
+      rowPageBreak: "avoid",
+    });
+  }
+
+  if (addedShiftCount === 0) {
+    throw new Error("No existen turnos con grupos para exportar.");
   }
 }
 
@@ -375,6 +899,7 @@ export function generateSchedulePdf({
   shifts = [],
   groups = [],
   entries = [],
+  directorName = "",
 }) {
   const isGeneralView = view === "general";
 
@@ -390,6 +915,12 @@ export function generateSchedulePdf({
     throw new Error("No existen grupos para exportar en la vista general.");
   }
 
+  if (view === "teacher" && !String(directorName).trim()) {
+    throw new Error(
+      "No se encontró el nombre de la directora para colocar la firma.",
+    );
+  }
+
   const doc = new jsPDF({
     orientation: "landscape",
 
@@ -398,168 +929,45 @@ export function generateSchedulePdf({
     format: isGeneralView ? "a3" : "a4",
   });
 
-  const generatedAt = new Intl.DateTimeFormat("es-MX", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "America/Mexico_City",
-  }).format(new Date());
-
-  const individualEntriesMap = isGeneralView
-    ? null
-    : createIndividualEntriesMap(entries);
-
-  const generalEntriesMap = isGeneralView
-    ? createGeneralEntriesMap(entries)
-    : null;
-
-  let addedShiftCount = 0;
-
-  for (const shift of shifts) {
-    const shiftGroups = isGeneralView
-      ? [...groups.filter((group) => getGroupShiftId(group) === shift.id)].sort(
-          sortGroups,
-        )
-      : [];
-
-    if (isGeneralView && shiftGroups.length === 0) {
-      continue;
-    }
-
-    if (addedShiftCount > 0) {
-      doc.addPage();
-    }
-
-    addedShiftCount += 1;
-
-    const shiftWithCount = {
-      ...shift,
-      groupCount: shiftGroups.length,
-    };
-
-    const cursorY = addDocumentHeader({
-      doc,
-      schoolName,
-      academicPeriodName,
-      versionName,
-      view,
-      selectedEntity,
-      shift: shiftWithCount,
-      generatedAt,
-    });
-
-    doc.setFont("helvetica", "bold");
-
-    doc.setFontSize(10);
-
-    doc.setTextColor(15, 23, 42);
-
-    doc.text(
-      `${formatTime(shift.start_time)}–${formatTime(shift.end_time)}`,
-      12,
-      cursorY,
-    );
-
-    const tableBody = isGeneralView
-      ? createGeneralTableBody({
-          shift,
-          groups: shiftGroups,
-          entriesMap: generalEntriesMap,
-        })
-      : createIndividualTableBody({
-          shift,
-          entriesMap: individualEntriesMap,
-          view,
-        });
-
-    autoTable(doc, {
-      startY: cursorY + 5,
-
-      head: [["Hora", ...SCHOOL_DAYS.map((day) => day.name)]],
-
-      body: tableBody,
-
-      theme: "grid",
-
-      styles: {
-        font: "helvetica",
-
-        fontSize: isGeneralView ? 5.2 : 7.5,
-
-        cellPadding: isGeneralView ? 1.5 : 2.5,
-
-        valign: isGeneralView ? "top" : "middle",
-
-        halign: isGeneralView ? "left" : "center",
-
-        overflow: "linebreak",
-
-        lineColor: [203, 213, 225],
-
-        lineWidth: 0.2,
-
-        minCellHeight: isGeneralView ? 20 : 17,
-      },
-
-      headStyles: {
-        fillColor: [15, 23, 42],
-
-        textColor: [255, 255, 255],
-
-        fontStyle: "bold",
-
-        fontSize: isGeneralView ? 7 : 8,
-
-        halign: "center",
-
-        valign: "middle",
-      },
-
-      columnStyles: {
-        0: {
-          cellWidth: isGeneralView ? 29 : 35,
-
-          fontStyle: "bold",
-
-          fillColor: [248, 250, 252],
-
-          halign: "center",
-
-          valign: "middle",
-        },
-      },
-
-      didParseCell(data) {
-        applyCellStyles({
-          data,
-          shift,
-          view,
-        });
-      },
-
-      margin: {
-        top: 12,
-        right: 10,
-        bottom: 15,
-        left: 10,
-      },
-
-      pageBreak: "auto",
-
-      rowPageBreak: "avoid",
-    });
-  }
-
-  if (addedShiftCount === 0) {
-    throw new Error("No existen turnos con grupos para exportar.");
-  }
-
-  addFooter(doc);
-
   if (isGeneralView) {
+    renderGeneralSchedule({
+      doc,
+
+      schoolName,
+
+      academicPeriodName,
+
+      shifts,
+
+      groups,
+
+      entriesMap: createGeneralEntriesMap(entries),
+    });
+
+    addFooter(doc);
+
     doc.save(`horario-general-${cleanFileName(schoolName)}.pdf`);
 
     return;
   }
+
+  renderIndividualSchedule({
+    doc,
+
+    schoolName,
+
+    academicPeriodName,
+
+    view,
+
+    selectedEntity,
+
+    shifts,
+
+    entriesMap: createIndividualEntriesMap(entries),
+
+    directorName,
+  });
 
   const entityFileName = cleanFileName(selectedEntity.name);
 

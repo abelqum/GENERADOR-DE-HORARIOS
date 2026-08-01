@@ -1,5 +1,6 @@
 import { cache } from "react";
 import { redirect } from "next/navigation";
+
 import { createClient } from "@/lib/supabase/server";
 
 export const getCurrentSchool = cache(async () => {
@@ -16,27 +17,28 @@ export const getCurrentSchool = cache(async () => {
 
   const { data: membership, error: membershipError } = await supabase
     .from("school_members")
-    .select(`
-      role,
-      school:schools (
-        id,
-        name,
-        code,
-        address,
-        phone,
-        email,
-        timezone,
-        active
-      )
-    `)
+    .select(
+      `
+        role,
+
+        school:schools (
+          id,
+          name,
+          director_name,
+          code,
+          address,
+          phone,
+          email,
+          timezone,
+          active
+        )
+      `,
+    )
     .eq("user_id", user.id)
     .maybeSingle();
 
   if (membershipError) {
-    console.error(
-      "Error obteniendo la escuela del usuario:",
-      membershipError,
-    );
+    console.error("Error obteniendo la escuela del usuario:", membershipError);
 
     throw new Error("No fue posible obtener la escuela actual.");
   }
@@ -47,7 +49,9 @@ export const getCurrentSchool = cache(async () => {
 
   return {
     user,
+
     role: membership.role,
+
     school: membership.school,
   };
 });

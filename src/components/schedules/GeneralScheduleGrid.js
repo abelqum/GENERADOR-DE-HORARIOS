@@ -6,6 +6,7 @@ import {
   Lock,
   LockKeyhole,
   UserRound,
+  Wrench,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo, useState, useTransition } from "react";
@@ -111,6 +112,38 @@ function NonClassSlot({ period }) {
 
       {isRecess ? "Receso" : "No disponible"}
     </div>
+  );
+}
+
+function WorkshopCard({ group, fixedEntry }) {
+  const color = fixedEntry.color || "#f59e0b";
+
+  return (
+    <article
+      title={`${group.name}: Taller fijo`}
+      className="relative min-h-[96px] rounded-lg border border-amber-300 bg-amber-50 p-2 shadow-sm"
+      style={{
+        borderTopColor: color,
+        borderTopWidth: "4px",
+      }}
+    >
+      <div className="flex items-start justify-between gap-1">
+        <p className="truncate text-[11px] font-extrabold text-amber-950">
+          {group.name}
+        </p>
+
+        <Lock
+          size={12}
+          className="shrink-0 text-amber-700"
+          aria-label="Taller bloqueado"
+        />
+      </div>
+
+      <p className="mt-2 flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wide text-amber-800">
+        <Wrench size={13} className="shrink-0" />
+        Taller
+      </p>
+    </article>
   );
 }
 
@@ -221,14 +254,19 @@ function GeneralClassCard({
       onDragStart={(event) => {
         if (!draggable) {
           event.preventDefault();
+
           return;
         }
 
         const payload = {
           entryId: entry.id,
+
           groupId: group.id,
+
           group_id: group.id,
+
           dayOfWeek: entry.day_of_week,
+
           shiftPeriodId: entry.shift_period_id,
         };
 
@@ -251,6 +289,7 @@ function GeneralClassCard({
       } ${isDragging ? "scale-95 opacity-40" : ""}`}
       style={{
         borderTopColor: subjectColor,
+
         borderTopWidth: "4px",
       }}
     >
@@ -291,6 +330,7 @@ export default function GeneralScheduleGrid({
   shifts = [],
   groups = [],
   entries = [],
+  fixedEntries = [],
 }) {
   const router = useRouter();
 
@@ -325,6 +365,27 @@ export default function GeneralScheduleGrid({
     return map;
   }, [entries]);
 
+  const fixedEntriesMap = useMemo(() => {
+    const map = new Map();
+
+    for (const fixedEntry of fixedEntries) {
+      if (!fixedEntry.group_id) {
+        continue;
+      }
+
+      map.set(
+        createEntryKey(
+          fixedEntry.group_id,
+          fixedEntry.day_of_week,
+          fixedEntry.shift_period_id,
+        ),
+        fixedEntry,
+      );
+    }
+
+    return map;
+  }, [fixedEntries]);
+
   function clearDragState() {
     setDraggedEntry(null);
     setActiveDropKey(null);
@@ -338,8 +399,11 @@ export default function GeneralScheduleGrid({
       (payload
         ? {
             id: payload.entryId,
+
             group_id: payload.groupId ?? payload.group_id,
+
             day_of_week: payload.dayOfWeek,
+
             shift_period_id: payload.shiftPeriodId,
           }
         : null);
@@ -350,11 +414,30 @@ export default function GeneralScheduleGrid({
       return;
     }
 
+    const targetKey = createEntryKey(group.id, day.value, period.id);
+
+    if (fixedEntriesMap.has(targetKey)) {
+      await Swal.fire({
+        icon: "warning",
+
+        title: "Movimiento no permitido",
+
+        text: "Ese espacio está reservado para Taller.",
+
+        confirmButtonText: "Entendido",
+      });
+
+      return;
+    }
+
     if (sourceEntry.group_id !== group.id) {
       await Swal.fire({
         icon: "warning",
+
         title: "Movimiento no permitido",
+
         text: "En la vista general solamente puedes mover una clase hacia otro espacio del mismo grupo.",
+
         confirmButtonText: "Entendido",
       });
 
@@ -372,10 +455,15 @@ export default function GeneralScheduleGrid({
 
     Swal.fire({
       title: "Moviendo clase",
+
       text: "Validando la nueva posición...",
+
       allowOutsideClick: false,
+
       allowEscapeKey: false,
+
       showConfirmButton: false,
+
       didOpen: () => {
         Swal.showLoading();
       },
@@ -399,8 +487,11 @@ export default function GeneralScheduleGrid({
       if (!result?.success) {
         await Swal.fire({
           icon: "error",
+
           title: "Movimiento no permitido",
+
           text: result?.message || "No fue posible guardar la nueva posición.",
+
           confirmButtonText: "Aceptar",
         });
 
@@ -409,9 +500,13 @@ export default function GeneralScheduleGrid({
 
       await Swal.fire({
         icon: "success",
+
         title: "Clase movida",
+
         text: result.message || "La nueva posición se guardó correctamente.",
+
         timer: 1500,
+
         showConfirmButton: false,
       });
 
@@ -425,8 +520,11 @@ export default function GeneralScheduleGrid({
 
       await Swal.fire({
         icon: "error",
+
         title: "No se pudo mover",
+
         text: "Ocurrió un error inesperado al guardar la nueva posición.",
+
         confirmButtonText: "Aceptar",
       });
     } finally {
@@ -450,6 +548,17 @@ export default function GeneralScheduleGrid({
 
   return (
     <div className="space-y-8">
+      {fixedEntries.length > 0 && (
+        <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-800">
+          <Wrench size={18} className="shrink-0" />
+
+          <p>
+            Las tarjetas <strong>Taller</strong> representan actividades fijas.
+            No son espacios libres y no pueden recibir clases.
+          </p>
+        </div>
+      )}
+
       {shifts.map((shift) => {
         const shiftGroups = [
           ...groups.filter(
@@ -556,27 +665,48 @@ export default function GeneralScheduleGrid({
                                   }}
                                 >
                                   {shiftGroups.map((group) => {
-                                    const entry = entriesMap.get(
-                                      createEntryKey(
-                                        group.id,
-                                        day.value,
-                                        period.id,
-                                      ),
+                                    const entryKey = createEntryKey(
+                                      group.id,
+                                      day.value,
+                                      period.id,
                                     );
 
-                                    return entry ? (
-                                      <GeneralClassCard
-                                        key={group.id}
-                                        entry={entry}
-                                        group={group}
-                                        canEdit={canEdit}
-                                        isDragging={
-                                          draggedEntry?.id === entry.id
-                                        }
-                                        onDragStart={setDraggedEntry}
-                                        onDragEnd={clearDragState}
-                                      />
-                                    ) : (
+                                    const entry = entriesMap.get(entryKey);
+
+                                    const fixedEntry =
+                                      fixedEntriesMap.get(entryKey);
+
+                                    /*
+                                     * El orden es importante:
+                                     * taller, clase y finalmente libre.
+                                     */
+                                    if (fixedEntry) {
+                                      return (
+                                        <WorkshopCard
+                                          key={group.id}
+                                          group={group}
+                                          fixedEntry={fixedEntry}
+                                        />
+                                      );
+                                    }
+
+                                    if (entry) {
+                                      return (
+                                        <GeneralClassCard
+                                          key={group.id}
+                                          entry={entry}
+                                          group={group}
+                                          canEdit={canEdit}
+                                          isDragging={
+                                            draggedEntry?.id === entry.id
+                                          }
+                                          onDragStart={setDraggedEntry}
+                                          onDragEnd={clearDragState}
+                                        />
+                                      );
+                                    }
+
+                                    return (
                                       <EmptyGroupSlot
                                         key={group.id}
                                         group={group}
