@@ -1,7 +1,4 @@
-import {
-  CalendarClock,
-  Coffee,
-} from "lucide-react";
+import { CalendarClock, Coffee } from "lucide-react";
 import AvailabilityCell from "@/components/availability/AvailabilityCell";
 import { SCHOOL_DAYS } from "@/constants/days";
 import { formatTime } from "@/utils/time";
@@ -14,22 +11,32 @@ function createAvailabilityMap(records) {
     ]),
   );
 }
+import { getAvailabilityConfiguration } from "@/constants/availability";
+function ReadOnlyAvailabilityCell({ availabilityType }) {
+  const configuration = getAvailabilityConfiguration(availabilityType);
 
+  return (
+    <div
+      className={`min-w-[138px] rounded-lg border p-1 ${configuration.activeClassName}`}
+    >
+      <div className="px-2 py-2 text-center text-xs font-semibold">
+        {configuration.shortLabel ?? configuration.label ?? availabilityType}
+      </div>
+    </div>
+  );
+}
 export default function TeacherAvailabilityGrid({
   teacher,
   teacherShifts,
   availability,
+  readOnly = false,
 }) {
-  const availabilityMap =
-    createAvailabilityMap(availability);
+  const availabilityMap = createAvailabilityMap(availability);
 
   if (!teacher) {
     return (
       <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-12 text-center">
-        <CalendarClock
-          className="mx-auto text-slate-400"
-          size={38}
-        />
+        <CalendarClock className="mx-auto text-slate-400" size={38} />
 
         <h3 className="mt-4 font-bold text-slate-900">
           Selecciona un profesor
@@ -45,18 +52,12 @@ export default function TeacherAvailabilityGrid({
   if (!teacherShifts.length) {
     return (
       <div className="rounded-2xl border border-amber-200 bg-amber-50 p-8 text-center">
-        <CalendarClock
-          className="mx-auto text-amber-600"
-          size={34}
-        />
+        <CalendarClock className="mx-auto text-amber-600" size={34} />
 
-        <h3 className="mt-4 font-bold text-amber-900">
-          Profesor sin turnos
-        </h3>
+        <h3 className="mt-4 font-bold text-amber-900">Profesor sin turnos</h3>
 
         <p className="mt-2 text-sm text-amber-700">
-          Primero asigna al profesor uno o más turnos desde
-          su configuración.
+          Primero asigna al profesor uno o más turnos desde su configuración.
         </p>
       </div>
     );
@@ -67,9 +68,9 @@ export default function TeacherAvailabilityGrid({
       {teacherShifts.map((teacherShift) => {
         const shift = teacherShift.shift;
 
-        const periods = (
-          shift?.shift_periods ?? []
-        ).filter((period) => period.active);
+        const periods = (shift?.shift_periods ?? []).filter(
+          (period) => period.active,
+        );
 
         return (
           <section
@@ -77,13 +78,10 @@ export default function TeacherAvailabilityGrid({
             className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
           >
             <div className="border-b border-slate-200 px-6 py-5">
-              <h3 className="font-bold text-slate-900">
-                Turno {shift?.name}
-              </h3>
+              <h3 className="font-bold text-slate-900">Turno {shift?.name}</h3>
 
               <p className="mt-1 text-sm text-slate-500">
-                {formatTime(shift?.start_time)} –{" "}
-                {formatTime(shift?.end_time)}
+                {formatTime(shift?.start_time)} – {formatTime(shift?.end_time)}
               </p>
             </div>
 
@@ -92,7 +90,7 @@ export default function TeacherAvailabilityGrid({
                 <thead>
                   <tr className="bg-slate-50">
                     <th className="sticky left-0 z-10 min-w-[190px] border-b border-r border-slate-200 bg-slate-50 px-5 py-4 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                     Hora
+                      Hora
                     </th>
 
                     {SCHOOL_DAYS.map((day) => (
@@ -108,8 +106,7 @@ export default function TeacherAvailabilityGrid({
 
                 <tbody>
                   {periods.map((period) => {
-                    const isClass =
-                      period.period_type === "class";
+                    const isClass = period.period_type === "class";
 
                     return (
                       <tr key={period.id}>
@@ -127,8 +124,7 @@ export default function TeacherAvailabilityGrid({
                             {!isClass && (
                               <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700">
                                 <Coffee size={12} />
-                                {period.period_type ===
-                                "recess"
+                                {period.period_type === "recess"
                                   ? "Receso"
                                   : "No disponible"}
                               </span>
@@ -138,9 +134,8 @@ export default function TeacherAvailabilityGrid({
 
                         {SCHOOL_DAYS.map((day) => {
                           const currentType =
-                            availabilityMap.get(
-                              `${day.value}-${period.id}`,
-                            ) || "available";
+                            availabilityMap.get(`${day.value}-${period.id}`) ||
+                            "available";
 
                           return (
                             <td
@@ -148,12 +143,18 @@ export default function TeacherAvailabilityGrid({
                               className="border-b border-r border-slate-200 p-3 last:border-r-0"
                             >
                               {isClass ? (
-                                <AvailabilityCell
-                                  teacherId={teacher.id}
-                                  dayOfWeek={day.value}
-                                  periodId={period.id}
-                                  initialType={currentType}
-                                />
+                                readOnly ? (
+                                  <ReadOnlyAvailabilityCell
+                                    availabilityType={currentType}
+                                  />
+                                ) : (
+                                  <AvailabilityCell
+                                    teacherId={teacher.id}
+                                    dayOfWeek={day.value}
+                                    periodId={period.id}
+                                    initialType={currentType}
+                                  />
+                                )
                               ) : (
                                 <div className="rounded-lg bg-slate-100 px-3 py-3 text-center text-xs font-medium text-slate-400">
                                   No aplica

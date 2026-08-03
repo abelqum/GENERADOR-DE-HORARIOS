@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, CalendarDays, Gauge, Layers3 } from "lucide-react";
-
+import TeacherAvailabilityComparison from "@/components/schedules/TeacherAvailabilityComparison";
 import EditableScheduleGrid from "@/components/schedules/editable/EditableScheduleGrid";
 import ExportSchedulePdfButton from "@/components/schedules/ExportSchedulePdfButton";
 import GeneralScheduleGrid from "@/components/schedules/GeneralScheduleGrid";
@@ -354,7 +354,89 @@ export default async function ScheduleVersionPage({ params, searchParams }) {
   const selectedTeacher =
     normalizedTeachers.find((teacher) => teacher.id === selectedTeacherId) ??
     null;
+  let comparisonTeacherShifts = [];
+  let comparisonAvailability = [];
 
+  if (selectedView === "teacher" && selectedTeacher && academicPeriod) {
+    const [
+      { data: teacherShiftsData, error: comparisonShiftsError },
+      { data: availabilityData, error: comparisonAvailabilityError },
+    ] = await Promise.all([
+      supabase
+        .from("teacher_shifts")
+        .select(
+          `
+        id,
+        max_weekly_periods,
+
+        shift:shifts (
+          id,
+          name,
+          start_time,
+          end_time,
+
+          shift_periods (
+            id,
+            period_number,
+            name,
+            start_time,
+            end_time,
+            period_type,
+            active
+          )
+        )
+      `,
+        )
+        .eq("school_id", school.id)
+        .eq("teacher_id", selectedTeacher.id),
+
+      supabase
+        .from("teacher_availability")
+        .select(
+          `
+        id,
+        day_of_week,
+        shift_period_id,
+        availability_type,
+        weight,
+        notes
+      `,
+        )
+        .eq("school_id", school.id)
+        .eq("academic_period_id", academicPeriod.id)
+        .eq("teacher_id", selectedTeacher.id),
+    ]);
+
+    logSupabaseError(
+      "Error obteniendo turnos para la comparativa:",
+      comparisonShiftsError,
+    );
+
+    logSupabaseError(
+      "Error obteniendo disponibilidad para la comparativa:",
+      comparisonAvailabilityError,
+    );
+
+    comparisonTeacherShifts = (teacherShiftsData ?? [])
+      .map((teacherShift) => ({
+        ...teacherShift,
+
+        shift: {
+          ...normalizeRelation(teacherShift.shift),
+
+          shift_periods: [
+            ...(normalizeRelation(teacherShift.shift)?.shift_periods ?? []),
+          ].sort((first, second) => first.period_number - second.period_number),
+        },
+      }))
+      .sort((first, second) =>
+        String(first.shift?.start_time ?? "").localeCompare(
+          String(second.shift?.start_time ?? ""),
+        ),
+      );
+
+    comparisonAvailability = availabilityData ?? [];
+  }
   let selectedPdfEntity = null;
 
   if (selectedView === "group" && selectedGroup) {
@@ -876,16 +958,26 @@ export default async function ScheduleVersionPage({ params, searchParams }) {
           fixedEntries={normalizedFixedEntries}
         />
       ) : (
-        <EditableScheduleGrid
-          versionId={version.id}
-          versionStatus={version.status}
-          shifts={shifts}
-          entries={normalizedEntries}
-          fixedEntries={normalizedFixedEntries}
-          view={selectedView}
-          teacherId={selectedView === "teacher" ? selectedTeacherId : null}
-          teacherSlotLabels={teacherSlotLabels}
-        />
+        <div className="space-y-8">
+          <EditableScheduleGrid
+            versionId={version.id}
+            versionStatus={version.status}
+            shifts={shifts}
+            entries={normalizedEntries}
+            fixedEntries={normalizedFixedEntries}
+            view={selectedView}
+            teacherId={selectedView === "teacher" ? selectedTeacherId : null}
+            teacherSlotLabels={teacherSlotLabels}
+          />
+
+          {selectedView === "teacher" && selectedTeacher && (
+            <TeacherAvailabilityComparison
+              teacher={selectedTeacher}
+              teacherShifts={comparisonTeacherShifts}
+              availability={comparisonAvailability}
+            />
+          )}
+        </div>
       )}
     </div>
   );
