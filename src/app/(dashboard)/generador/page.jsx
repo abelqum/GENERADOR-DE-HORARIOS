@@ -2,8 +2,11 @@ import {
   BookOpen,
   CalendarClock,
   ClipboardList,
+  PencilRuler,
   Users,
 } from "lucide-react";
+import Link from "next/link";
+
 import GenerateScheduleButton from "@/components/generator/GenerateScheduleButton";
 import GeneratorReadinessCard from "@/components/generator/GeneratorReadinessCard";
 import RevalidateButton from "@/components/generator/RevalidateButton";
@@ -18,14 +21,15 @@ export const metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function GeneratorPage() {
-  const validation =
-    await validateScheduleConfiguration();
+  const validation = await validateScheduleConfiguration();
 
   const statistics = validation.statistics ?? {};
 
   const checkedAt = new Intl.DateTimeFormat("es-MX", {
     dateStyle: "medium",
+
     timeStyle: "short",
+
     timeZone: "America/Mexico_City",
   }).format(new Date(validation.checkedAt));
 
@@ -42,8 +46,8 @@ export default async function GeneratorPage() {
           </h2>
 
           <p className="mt-2 max-w-3xl text-slate-600">
-            Verifica la configuración escolar antes de enviar
-            la información al motor OR-Tools.
+            Verifica la configuración escolar antes de enviar la información al
+            motor OR-Tools.
           </p>
 
           <p className="mt-3 text-xs text-slate-400">
@@ -52,11 +56,17 @@ export default async function GeneratorPage() {
         </div>
 
         <div className="flex flex-col gap-3 sm:flex-row">
+          <Link
+            href="/generador/manual"
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-500 hover:bg-slate-50"
+          >
+            <PencilRuler size={17} />
+            Construir manualmente
+          </Link>
+
           <RevalidateButton />
 
-          <GenerateScheduleButton
-            canGenerate={validation.canGenerate}
-          />
+          <GenerateScheduleButton canGenerate={validation.canGenerate} />
         </div>
       </section>
 
@@ -120,9 +130,7 @@ export default async function GeneratorPage() {
         </section>
       )}
 
-      <ValidationResultsPanel
-        results={validation.results}
-      />
+      <ValidationResultsPanel results={validation.results} />
     </div>
   );
 }
